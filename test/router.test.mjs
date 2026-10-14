@@ -60,6 +60,19 @@ test("complex coding chooses capability and legal effort together", () => {
     { provider: "p", model: "coder", reasoningEffort: "high" },
   );
 });
+test("moderate task uses the advertised midpoint when named medium is the weakest effort", () => {
+  const model = {
+    ...pool[1],
+    efforts: ["medium", "brief", "standard", "high", "max"],
+  };
+  assert.deepEqual(
+    route(
+      { tier: "moderate", role: "coding", relation: "new" },
+      { pool: [model] },
+    ).selection,
+    { provider: "p", model: "balanced", reasoningEffort: "standard" },
+  );
+});
 test("unfinished continuation keeps prior model and depth", () => {
   const previous = {
     provider: "p",
@@ -142,4 +155,18 @@ test("continuation can upgrade a model whose configured capability no longer mee
     ).selection.model,
     "coder",
   );
+});
+
+test("named high caps automatic efforts; explicit max stays opt-in", () => {
+  const model = { ...pool[2], efforts: ["low", "high", "max", "xhigh"] };
+  for (const [tier, expected] of [["simple", "low"], ["moderate", "high"], ["complex", "high"]]) {
+    assert.equal(route({ tier, role: "coding", relation: "new" }, { pool: [model] })
+      .selection.reasoningEffort, expected);
+  }
+  const unusual = { ...model, efforts: ["low", "standard", "high", "medium", "max"] };
+  assert.equal(route({ tier: "moderate", role: "coding", relation: "new" }, { pool: [unusual] })
+    .selection.reasoningEffort, "standard");
+  const optedIn = { ...model, effortByTier: { complex: "max" } };
+  assert.equal(route({ tier: "complex", role: "coding", relation: "new" }, { pool: [optedIn] })
+    .selection.reasoningEffort, "max");
 });

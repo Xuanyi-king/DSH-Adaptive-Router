@@ -35,9 +35,14 @@ export function deriveLadder(ids: string[]): string[] {
   const low = ids[0];
   let high = ids.includes("high") ? "high" : ids.at(-1)!;
   if (high === low) high = ids.at(-1)!;
-  let mid = ids.includes("medium") ? "medium" : ids[Math.floor(ids.length / 2)];
-  if (mid === low || mid === high)
-    mid = ids.find((id) => id !== low && id !== high) ?? mid;
+  const ceiling = ids.slice(0, ids.indexOf(high) + 1);
+  // Respect the named high ceiling: max/xhigh remain opt-in when high is available.
+  let mid = ceiling.includes("medium") ? "medium" : ceiling[Math.floor(ceiling.length / 2)];
+  if (mid === low || mid === high) {
+    mid = ceiling[Math.floor(ceiling.length / 2)];
+    if (mid === low || mid === high)
+      mid = ceiling.find((id) => id !== low && id !== high) ?? mid;
+  }
   return [...new Set([low, mid, high])].sort(
     (a, b) => ids.indexOf(a) - ids.indexOf(b),
   );

@@ -75,3 +75,37 @@ modelSelection 的 intent projection 是测试契约夹具；原生请求覆盖�
 2. 工具仅返回短文本，第二步骤的 pre-step 另行提供 100KB 尚未提交的消息；确认这些最新输入也触发容量保护，不盲目复用首次输入快照。
 
 容量仍是保守字节估计，不宣称 DSH prepareCall 执行精确上下文 Token 验证；本次没有线上模型调用或 UI 改动。
+
+## S2 上游复用审查验证
+
+基线：PR #1 已合并的 main `ea0853d8138379bb4f14fea02ed999bfad27d125`。
+`npm ci --no-audit --no-fund` 成功，基线 `npm test` **39/39 通过**。
+
+唯一生产修改是恢复 Jev `deriveLadder` 的原始中点回退顺序。当 advertised
+`medium` 正好是最低档时，先尝试声明顺序的中点，再寻找其他合法档位。
+新增回归在修改前明确失败（实际 brief、预期 standard），恢复后
+`npm test` **40/40 通过，0 失败、0 跳过**；原有 39 项回归保留。
+没有更改 DSH Adapter、缓存、上下文保护、手动控制或配置。
+
+- 本地确定性探针执行提取的 Pi 纯函数、Claude 的纯 policy 和 OpenSquilla 的
+  heuristic 函数，对照 tier/role、短续问、中文编程、固定档位限制；没有调用
+  它们的 LLM/ML runtime。八组 ladder 与 Jev 原始函数对照通过。
+- `npm run build`、`npm pack`、`node --check lib/client.js`、`git diff --check` 成功。
+  包含更新后的 `lib/router.js`、审查文档、Bundle patch、项目 LICENSE、
+  THIRD_PARTY_NOTICES 和完整 Jev MIT 许可。package.json/lockfile 未变，未增加运行时依赖。
+- 在新的 `/tmp/dsh-s2-smoke.*` 目录以 `npm install --omit=dev` 安装 tarball，
+  实际动态导入正式插件入口、执行中点路由、检查 bundle/client/审查文档和许可证，全部通过。
+  原生 `dsh-system-prompt` peer 仍为 `0.2.1-alpha.2`；没有安装 AgentLoop testkit。
+  这是生产包安装冒烟，不等同于完整 DSH Web/CLI profile 验证。
+
+详细能力对照、固定上游提交、行为变化与未采用理由见
+[S2-UPSTREAM-AUDIT.md](S2-UPSTREAM-AUDIT.md)。没有线上准确率或性能测评；
+原有真实服务、完整 Web/CLI 安装验证限制不变。
+
+
+## 合并前 review 补充：具名 high 上限
+
+发现上游 `deriveLadder` 对 `[low, high, max]` 的排序可能把 max 当成默认复杂档位。
+在不改变 Jev/选模/会话生命周期的前提下，将默认梯度限制在具名 high 及之前的广告档位；显式 `effortByTier` 的 max/xhigh 仍合法。
+直接执行同步后的 `lib/router.js` 六组边界与复杂档映射探针通过，并添加 1 个策略回归。
+**本补丁之后的完整 `npm test` 和 PR #3 合并后的集成组合尚未在当前环境重新执行**；先前的 S2 40/40、PR #3 40/40 属于各自分支的验证记录。

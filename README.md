@@ -22,14 +22,14 @@
 仓库提供预构建的 `lib/`，可直接从 GitHub 安装（需要已安装目标版本 DSH 和 pnpm）：
 
 ```bash
-dsh plugin --profile web add github:Xuanyi-king/dsh-adaptive-router
+dsh plugin --profile web add github:Xuanyi-king/DSH-Adaptive-Router
 # 重启 dsh web
 ```
 
 尚未发布 npm 包。也可克隆源码后构建并使用本地 tarball：
 
 ```bash
-git clone https://github.com/Xuanyi-king/dsh-adaptive-router.git
+git clone https://github.com/Xuanyi-king/DSH-Adaptive-Router.git
 cd dsh-adaptive-router
 npm ci
 npm test

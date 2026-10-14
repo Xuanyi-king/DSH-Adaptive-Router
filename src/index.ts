@@ -107,7 +107,7 @@ export function apply(ctx: Context, config: object) {
     Agent,
     { turn: number; text: string; material: boolean; images: boolean;
       messages?: UserMessage[];
-      assembly?: PromptAssembly; promptBytes?: number; batchRevision?: number }
+      assembly?: PromptAssembly; promptBytes?: number; batchRevision?: number; assemblyRevision?: number }
   >();
   const records = new Map<string, RecordState>();
   const settings = () => readConfig(config);
@@ -115,7 +115,9 @@ export function apply(ctx: Context, config: object) {
   let prependRevision = 0, captureRevision = -1;
   let seatingCapture = false;
   let stopCapture: (() => unknown) | undefined;
-  let assemblyReliable = true;
+  let assemblyRevision = 0, captureAssemblyRevision = -1;
+  let seatingAssembly = false;
+  let stopAssemblyCapture: (() => unknown) | undefined;
   function seatCapture() {
     if (captureRevision === prependRevision) return;
     seatingCapture = true;
@@ -126,7 +128,8 @@ export function apply(ctx: Context, config: object) {
     } finally { seatingCapture = false; }
   }
   ctx.on("llm/adapters-updated", () => { registryRevision++; });
-  ctx.on("system-prompt/assemble", async (assembly, context, next) => {
+  const captureAssembly = async (assembly: PromptAssembly, context: { agent?: Agent }, next: () => Promise<PromptAssembly>) => {
+    const boundaryRevision = captureAssemblyRevision;
     const resolved = await next();
     const agent = context.agent;
     if (agent && !isSubagent(agent)) {
@@ -138,7 +141,7 @@ export function apply(ctx: Context, config: object) {
           Buffer.byteLength(renderPrompt({ ...resolved, sections: assembly.sections }), "utf8"),
         );
         pending.set(agent, { turn: -1, text: "", material: false, images: false,
-          ...previous, assembly: resolved, promptBytes });
+          ...previous, assembly: resolved, promptBytes, assemblyRevision: boundaryRevision });
       } catch {
         // An unpriceable assembly must not break an otherwise valid DSH request.
         pending.set(agent, { turn: -1, text: "", material: false, images: false,
@@ -146,20 +149,33 @@ export function apply(ctx: Context, config: object) {
       }
     }
     return resolved;
-  }, { prepend: true });
+  };
+  function seatAssembly() {
+    if (captureAssemblyRevision === assemblyRevision) return;
+    seatingAssembly = true;
+    try {
+      stopAssemblyCapture?.();
+      stopAssemblyCapture = ctx.on("system-prompt/assemble", captureAssembly, { prepend: true });
+      captureAssemblyRevision = assemblyRevision;
+    } finally { seatingAssembly = false; }
+  }
+  seatAssembly();
   // These are documented Cordis notifications. Its runtime passes EventOptions
   // although the current declaration still names this argument a boolean.
   ctx.on("internal/listener", (event, _listener, rawOptions) => {
     const options: unknown = rawOptions;
     const prepend = options === true || (typeof options === "object" && options !== null
       && "prepend" in options && options.prepend === true);
-    if (!prepend || seatingCapture) return;
-    if (event === "agent/pre-step") prependRevision++;
-    if (event === "system-prompt/assemble") assemblyReliable = false;
+    if (!prepend) return;
+    if (event === "agent/pre-step" && !seatingCapture) prependRevision++;
+    if (event === "system-prompt/assemble" && !seatingAssembly) assemblyRevision++;
   });
   ctx.on("internal/dispatch", (_mode, event) => {
     // Cordis takes its listener snapshot AFTER this synchronous notification.
     if (event === "agent/pre-step") seatCapture();
+    // The same documented snapshot boundary lets us observe the final native
+    // working-directory/session-reference transforms, even when mounted later.
+    if (event === "system-prompt/assemble") seatAssembly();
   });
   function manualState(agent: Agent): { pending: unknown } | undefined {
     // SessionController owns this optional projection, not this plugin.
@@ -258,7 +274,7 @@ export function apply(ctx: Context, config: object) {
   }
   function contextBytes(agent: Agent, signal: AbortSignal): number | undefined {
     const input = pending.get(agent);
-    if (!assemblyReliable || !input?.assembly || !input.messages || input.promptBytes === undefined
+    if (input?.assemblyRevision !== assemblyRevision || !input?.assembly || !input.messages || input.promptBytes === undefined
       || input.batchRevision !== prependRevision) return undefined;
     const history = agent.session.deriveMessages();
     // Attachments and deferred tools need adapter-owned pricing: do not guess.

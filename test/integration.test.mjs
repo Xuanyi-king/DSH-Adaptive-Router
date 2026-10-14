@@ -795,3 +795,32 @@ test("real same-turn offered context is checked before it is committed", async (
   const end = agent.session.snapshotEvents().findLast(event => event.type === "turn/end");
   assert.equal(end.data.reason.kind, "error");
 });
+
+test('late native-style prompt assembly remains measurable across small tool steps', async t => {
+  const { ctx, adapter, agent } = await setup(t);
+  // working-directory uses this exact outer waterfall shape in the real host.
+  ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+    const assembly = await next();
+    assembly.contexts.push({ name: 'late-native-context', text: 'small working directory', interpolate: false });
+    return assembly;
+  }, { prepend: true });
+  ctx.tools.register({
+    name: 'small-context', description: 'Return a small text result',
+    parameters: { type: 'object', properties: {} },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    async execute() { return 'small result'; },
+  });
+  adapter.stream = async function* (options) {
+    this.requests.push(options);
+    if (this.requests.length === 1) {
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' };
+      yield { type: 'tool-call-delta', index: 0, id: ToolCallId('small-result'), name: 'small-context', argumentsDelta: '{}' };
+      yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: ToolCallId('small-result'), name: 'small-context', arguments: '{}' } };
+      yield { type: 'finish', reason: { kind: 'tool-calls' } };
+    } else yield { type: 'finish', reason: { kind: 'stop' } };
+  };
+  await send(agent, '你好');
+  assert.equal(adapter.requests[0].model, 'fast');
+  assert.equal(adapter.requests.length, 2, 'a small native tool result must not cause a capacity stop');
+  assert.equal(agent.session.snapshotEvents().findLast(event => event.type === 'turn/end').data.reason.kind, 'completed');
+});

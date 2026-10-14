@@ -7,7 +7,7 @@ import {
   mountAgentLoopTestDependencies,
   mountAgentLoopTestHarness,
 } from "@deepseek-ai/dsh-agent-loop-testkit";
-import { LlmAdapter, createUserMessage } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter, createUserMessage, ToolCallId } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { agentEvents, installModelSelection } from "@deepseek-ai/dsh-agent";
 import * as plugin from "../lib/index.js";
@@ -692,4 +692,106 @@ test("unknown outer prompt assembly transform conservatively prevents shrinking"
   }), { prepend: true });
   await send(agent, "你好");
   assert.equal(adapter.requests[0].model, "balanced");
+});
+
+
+test("real same-turn tool growth stops the cached 64K model despite its persisted header", async (t) => {
+  const { ctx, adapter, agent } = await setup(t);
+  const resolve = adapter.resolveModel.bind(adapter);
+  adapter.resolveModel = async (provider, model) => ({
+    ...(await resolve(provider, model)),
+    context: { contextWindow: model === "balanced" ? 200000 : 64000 },
+  });
+  let catalogs = 0;
+  const list = adapter.listModels.bind(adapter);
+  adapter.listModels = async provider => { catalogs++; return list(provider); };
+  ctx.tools.register({
+    name: "load-large-context", description: "Return a large text result",
+    parameters: { type: "object", properties: {} },
+    output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: value }] },
+    async execute() { return "x".repeat(100000); },
+  });
+  adapter.stream = async function* (options) {
+    this.requests.push(options);
+    if (this.requests.length === 1) {
+      yield { type: "block-start", index: 0, blockType: "tool-call" };
+      yield { type: "tool-call-delta", index: 0, id: ToolCallId("large-result"), name: "load-large-context", argumentsDelta: "{}" };
+      yield { type: "block-end", index: 0, block: { type: "tool-call", id: ToolCallId("large-result"), name: "load-large-context", arguments: "{}" } };
+      yield { type: "finish", reason: { kind: "tool-calls" } };
+    } else {
+      yield { type: "finish", reason: { kind: "stop" } };
+    }
+  };
+  await send(agent, "你好");
+  assert.equal(adapter.requests[0].model, "fast");
+  assert.equal(agent.session.requestHeader().config.model, "fast");
+  assert.ok(agent.session.deriveMessages().some(message => message.content.some(
+    block => block.type === "text" && block.text === "x".repeat(100000),
+  )));
+  assert.equal(adapter.requests.length, 1, "oversized second request must never reach the provider");
+  assert.equal(catalogs, 1, "capacity protection must not rebuild the catalog");
+  const decision = ctx.get("adaptiveRouter").getSessionState(String(agent.session.id)).decision;
+  assert.equal(decision.control, "Blocked");
+  assert.match(decision.reason, /context-capacity/);
+  const end = agent.session.snapshotEvents().findLast(event => event.type === "turn/end");
+  assert.equal(end.data.reason.kind, "error");
+  await assert.rejects(agentEvents(ctx, agent).waterfall("agent/request",
+    { turn: 1, step: 2, signal: new AbortController().signal },
+    () => Promise.resolve(agent.session.requestHeader().config)), /Adaptive Router stopped this turn/);
+  agent.session.append("model/selection", { provider: "p", model: "balanced", reasoningEffort: "high" });
+  const manual = await agentEvents(ctx, agent).waterfall("agent/request",
+    { turn: 1, step: 2, signal: new AbortController().signal },
+    () => Promise.resolve({ provider: "p", model: "balanced", reasoningEffort: "high" }));
+  assert.equal(manual.model, "balanced");
+  assert.equal(catalogs, 1);
+});
+
+test("real same-turn offered context is checked before it is committed", async (t) => {
+  const { ctx, adapter, agent } = await setup(t);
+  const resolve = adapter.resolveModel.bind(adapter);
+  adapter.resolveModel = async (provider, model) => ({
+    ...(await resolve(provider, model)),
+    context: { contextWindow: model === "balanced" ? 200000 : 64000 },
+  });
+  let catalogs = 0;
+  const list = adapter.listModels.bind(adapter);
+  adapter.listModels = async provider => { catalogs++; return list(provider); };
+  let offered = false;
+  ctx.on("agent/pre-step", async (payload, next) => {
+    const decision = await next();
+    if (payload.step !== 2) return decision;
+    offered = true;
+    return { ...decision, messages: [...decision.messages, createUserMessage({
+      content: [{ type: "text", text: "x".repeat(100000) }],
+      source: { kind: "model-selection", form: "notice", summary: "large new context" },
+    })] };
+  });
+  ctx.tools.register({
+    name: "load-large-context", description: "Return a large text result",
+    parameters: { type: "object", properties: {} },
+    output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: value }] },
+    async execute() { return "ok"; },
+  });
+  adapter.stream = async function* (options) {
+    this.requests.push(options);
+    if (this.requests.length === 1) {
+      yield { type: "block-start", index: 0, blockType: "tool-call" };
+      yield { type: "tool-call-delta", index: 0, id: ToolCallId("large-result"), name: "load-large-context", argumentsDelta: "{}" };
+      yield { type: "block-end", index: 0, block: { type: "tool-call", id: ToolCallId("large-result"), name: "load-large-context", arguments: "{}" } };
+      yield { type: "finish", reason: { kind: "tool-calls" } };
+    } else {
+      yield { type: "finish", reason: { kind: "stop" } };
+    }
+  };
+  await send(agent, "你好");
+  assert.equal(adapter.requests[0].model, "fast");
+  assert.equal(agent.session.requestHeader().config.model, "fast");
+  assert.equal(offered, true);
+  assert.equal(adapter.requests.length, 1, "oversized second request must never reach the provider");
+  assert.equal(catalogs, 1, "capacity protection must not rebuild the catalog");
+  const decision = ctx.get("adaptiveRouter").getSessionState(String(agent.session.id)).decision;
+  assert.equal(decision.control, "Blocked");
+  assert.match(decision.reason, /context-capacity/);
+  const end = agent.session.snapshotEvents().findLast(event => event.type === "turn/end");
+  assert.equal(end.data.reason.kind, "error");
 });

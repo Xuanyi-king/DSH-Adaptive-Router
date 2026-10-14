@@ -50,7 +50,10 @@ interface RecordState {
   control: string;
   configKey?: string;
   registryRevision?: number;
+  modelInfo?: LlmResolvedModelInfo;
+  capacityBlocked?: string;
 }
+class ContextCapacityError extends Error {}
 const isSubagent = (agent: Agent) => agent.session.header.origin === "subagent";
 const selectionOf = (config: LlmCallConfig): Selection => ({
   provider: config.provider,
@@ -220,7 +223,7 @@ export function apply(ctx: Context, config: object) {
     messages: UserMessage[]; signal: AbortSignal }, next: () => Promise<PreStepDecision>) {
     const boundaryRevision = captureRevision;
     const decision = await next();
-    if (decision.kind !== "reject" && payload.step === 1 && !isSubagent(payload.agent)) {
+    if (decision.kind !== "reject" && !isSubagent(payload.agent)) {
       const messages = decision.messages.filter(
         (m) => m.source?.kind === "user",
       );
@@ -229,7 +232,8 @@ export function apply(ctx: Context, config: object) {
         messages: decision.messages,
         batchRevision: boundaryRevision,
         turn: payload.turn,
-        text: messages.map(messageText).filter(Boolean).join("\n"),
+        text: payload.step === 1 ? messages.map(messageText).filter(Boolean).join("\n")
+          : pending.get(payload.agent)?.text ?? "",
         material: messages.some((m) =>
           m.content.some((b) => b.type !== "text"),
         ),
@@ -271,24 +275,24 @@ export function apply(ctx: Context, config: object) {
     } catch { return undefined; }
   }
   function fitsContext(agent: Agent, original: LlmCallConfig, info: LlmResolvedModelInfo,
-    currentInfo: LlmResolvedModelInfo | undefined, signal: AbortSignal): boolean {
-    if (sameModel(original, { provider: info.provider, model: info.id })) return true;
+    currentInfo: LlmResolvedModelInfo | undefined, signal: AbortSignal, reuse = false): boolean {
+    if (!reuse && sameModel(original, { provider: info.provider, model: info.id })) return true;
     const window = info.context?.contextWindow;
     if (!window) return false;
     const bytes = contextBytes(agent, signal);
-    if (bytes === undefined) return !!currentInfo?.context && window >= currentInfo.context.contextWindow;
+    if (bytes === undefined) return !reuse && !!currentInfo?.context && window >= currentInfo.context.contextWindow;
     const output = original.maxTokens ?? info.defaultMaxTokens ?? Math.floor(window / 2);
     // Leave framing slack plus the configured/native output cap, or half the
     // window when the provider has not declared its output default.
     return bytes + output + 2048 <= window;
   }
   async function validateHeld(selected: Selection, signal: AbortSignal) {
-    if (!ctx.llm.listProviders().some(provider => provider.id === selected.provider)) return false;
-    if (!(await ctx.llm.listModels(selected.provider)).some(model => model.id === selected.model)) return false;
+    if (!ctx.llm.listProviders().some(provider => provider.id === selected.provider)) return undefined;
+    if (!(await ctx.llm.listModels(selected.provider)).some(model => model.id === selected.model)) return undefined;
     const info = await ctx.llm.resolveModelInfo(selected.provider, selected.model, signal);
-    return selected.reasoningEffort === undefined || !!info.reasoning?.efforts.some(
+    return selected.reasoningEffort === undefined || info.reasoning?.efforts.some(
       effort => String(effort.id) === selected.reasoningEffort,
-    );
+    ) ? info : undefined;
   }
   async function poolFor(
     current: LlmCallConfig,
@@ -319,7 +323,7 @@ export function apply(ctx: Context, config: object) {
       }
     }
     const currentInfo = await available(current);
-    const pool: Candidate[] = [];
+    const pool: (Candidate & { modelInfo: LlmResolvedModelInfo })[] = [];
     for (const candidate of s.candidates.filter((m) => m.enabled)) {
       if (pool.some((m) => sameModel(m, candidate))) continue;
       const info = await available(candidate);
@@ -336,12 +340,14 @@ export function apply(ctx: Context, config: object) {
         ...candidate,
         efforts: (info.reasoning?.efforts ?? []).map((e) => String(e.id)),
         contextWindow: info.context?.contextWindow,
+        modelInfo: info,
       });
     }
     if (currentInfo && !pool.some((m) => sameModel(m, current)))
       pool.push({
         ...current,
         tier: "complex",
+        modelInfo: currentInfo,
         roles: ["general", "coding", "reasoning"],
         efforts: (currentInfo.reasoning?.efforts ?? []).map((e) =>
           String(e.id),
@@ -384,14 +390,24 @@ export function apply(ctx: Context, config: object) {
         if (prior?.turn === turn && prior.configKey !== JSON.stringify(s))
           return pass("settings-changed", "Native");
         if (prior?.turn === turn && prior.selection) {
+          // An explicit capacity stop must remain a stop on a retry: original
+          // may already be the small model recorded in DSH's persisted header.
+          if (prior.capacityBlocked) throw new ContextCapacityError(prior.capacityBlocked);
+          let info = prior.modelInfo;
           if (prior.registryRevision !== inspectedRevision) {
-            const valid = await withinBudget(validateHeld(prior.selection, signal), s.timeoutMs, signal);
-            if (!valid) return pass("held-route-unavailable");
+            info = await withinBudget(validateHeld(prior.selection, signal), s.timeoutMs, signal);
+            if (!info) return pass("held-route-unavailable");
           }
           if (!canApply(agent, s, signal, inspectedRevision)) return pass("decision-superseded", "Native");
-          save(agent, { ...prior, registryRevision: inspectedRevision });
-          // DSH prepareCall still validates the exact target and effort on every
-          // real request. An unchanged catalog does not need to be listed again.
+          const fits = info && fitsContext(agent, original, info, undefined, signal, true);
+          if (!canApply(agent, s, signal, inspectedRevision)) return pass("decision-superseded", "Native");
+          if (!fits) {
+            const message = `Adaptive Router stopped this turn: the latest context exceeds or cannot safely be priced within the cached ${prior.selection.provider}/${prior.selection.model} window (${info?.context?.contextWindow ?? "unknown"}). Select a larger-context model or compact the conversation before continuing.`;
+            save(agent, { ...prior, reason: "context-capacity-blocked", control: "Blocked", capacityBlocked: message });
+            throw new ContextCapacityError(message);
+          }
+          if (!canApply(agent, s, signal, inspectedRevision)) return pass("decision-superseded", "Native");
+          save(agent, { ...prior, modelInfo: info, registryRevision: inspectedRevision });
           return replace(original, prior.selection);
         }
         const text = pending.get(agent);
@@ -468,6 +484,7 @@ export function apply(ctx: Context, config: object) {
                   control: "Fallback",
                   configKey: JSON.stringify(s),
                   registryRevision: inspectedRevision,
+                  modelInfo: fallback.modelInfo,
                 });
                 return replace(original, selected);
               }
@@ -521,9 +538,13 @@ export function apply(ctx: Context, config: object) {
           control,
           configKey: JSON.stringify(s),
           registryRevision: inspectedRevision,
+          modelInfo: info,
         });
         return replace(original, selected);
-      } catch {
+      } catch (error) {
+        // Known unsafe cached input is an intentional, visible stop, not a
+        // router malfunction that should silently pass the persisted route.
+        if (error instanceof ContextCapacityError) throw error;
         return pass("router-error");
       }
     },

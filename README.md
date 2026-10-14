@@ -22,15 +22,17 @@
 仓库提供预构建的 `lib/`，可直接从 GitHub 安装（需要已安装目标版本 DSH 和 pnpm）：
 
 ```bash
-dsh plugin --profile web add github:Xuanyi-king/DSH-Adaptive-Router
+dsh plugin --profile web add github:Xuanyi-king/DSH-Adaptive-Router#01788c9b0997ff56f7588ccedeaf31e8dd1d470c
 # 重启 dsh web
 ```
+
+GitHub 示例固定到本轮已验证的修复提交（PR 合并前该提交位于审计分支）；普通 install 可能复用旧 lock commit。升级时从外部终端停止 Host，使用经过核验的新完整 SHA 或已构建 tarball，仅更新此包；保留原 SHA、tgz 和 Profile lock 供回滚。安装后核对 lock 解析 SHA、磁盘 package 版本与原生插件条目的 active 状态，再重启 Host、硬刷新 Web Client。不要删除整个 lockfile 或升级其他插件。
 
 尚未发布 npm 包。也可克隆源码后构建并使用本地 tarball：
 
 ```bash
 git clone https://github.com/Xuanyi-king/DSH-Adaptive-Router.git
-cd dsh-adaptive-router
+cd DSH-Adaptive-Router
 npm ci
 npm test
 npm pack

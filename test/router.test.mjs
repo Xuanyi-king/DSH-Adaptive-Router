@@ -156,3 +156,17 @@ test("continuation can upgrade a model whose configured capability no longer mee
     "coder",
   );
 });
+
+test("named high caps automatic efforts; explicit max stays opt-in", () => {
+  const model = { ...pool[2], efforts: ["low", "high", "max", "xhigh"] };
+  for (const [tier, expected] of [["simple", "low"], ["moderate", "high"], ["complex", "high"]]) {
+    assert.equal(route({ tier, role: "coding", relation: "new" }, { pool: [model] })
+      .selection.reasoningEffort, expected);
+  }
+  const unusual = { ...model, efforts: ["low", "standard", "high", "medium", "max"] };
+  assert.equal(route({ tier: "moderate", role: "coding", relation: "new" }, { pool: [unusual] })
+    .selection.reasoningEffort, "standard");
+  const optedIn = { ...model, effortByTier: { complex: "max" } };
+  assert.equal(route({ tier: "complex", role: "coding", relation: "new" }, { pool: [optedIn] })
+    .selection.reasoningEffort, "max");
+});

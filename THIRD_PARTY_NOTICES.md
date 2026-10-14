@@ -13,7 +13,9 @@ Source revision: `9b8ac7dd8668b936dbd3cde1c93c12eecbf3fca8`.
   provider/model inheritance and image presence; renamed the projection.
 - `lib/index.js` `deriveLadder` → `src/router.ts`: adapted adapter-ordered effort ladder;
   deduplicated results and added validated per-tier mappings. S2 restores the original
-  midpoint-first fallback when the named middle effort collides with an endpoint.
+  midpoint-first fallback when the named middle effort collides with an endpoint;
+  adds a deliberate safety deviation to cap automatic ladders at named high,
+  keeping advertised max/xhigh opt-in.
 - `lib/index.js` `askJev`, `resolveKey`, `readConfig`, pre-step/request/manual/abort
   mechanisms → `src/classifier.ts`, `src/index.ts`, `src/config.ts`: adapted to a single
   capability-tier/role classifier, registered model pool, four modes and current DSH.

@@ -568,10 +568,12 @@ export function apply(ctx: Context, config: object) {
   );
   class RouterRemote {
     getSessionState(sessionId: string) {
+      const record = records.get(String(sessionId));
       return {
         enabled: settings().enabled,
         conflict: conflict(),
-        decision: records.get(String(sessionId)) ?? null,
+        decision: record ? { turn: record.turn, selection: record.selection,
+          reason: record.reason, control: record.control } : null,
       };
     }
   }

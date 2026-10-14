@@ -109,3 +109,37 @@ modelSelection 的 intent projection 是测试契约夹具；原生请求覆盖�
 在不改变 Jev/选模/会话生命周期的前提下，将默认梯度限制在具名 high 及之前的广告档位；显式 `effortByTier` 的 max/xhigh 仍合法。
 直接执行同步后的 `lib/router.js` 六组边界与复杂档映射探针通过，并添加 1 个策略回归。
 **本补丁之后的完整 `npm test` 和 PR #3 合并后的集成组合尚未在当前环境重新执行**；先前的 S2 40/40、PR #3 40/40 属于各自分支的验证记录。
+
+
+## S3 原生配置与交互验证
+
+基于 PR #1/#2/#3 已合并的 main `f9d4325ccb03367ba8fe629eb0f1b23ad31dc9de`。
+Node.js ≥22；目标 DSH `0.2.1-alpha.2`。本轮基线 **42/42** 通过，也补齐了此前记录中合并组合未执行的检查。
+
+- `npm ci`、`npm test`：**52/52 通过，0 失败、0 跳过**。保留全部 42 项策略、手动优先、缓存、容量增长和真实 AgentLoop 回归；增加 10 项真实 React DOM 交互测试。UI primitives、配置 transport 使用契约夹具，不能单独视为完整 Web 验收。
+- 新增回归覆盖：原生目录授权/修订保存、合法 max 与用途、不再可用的旧候选保留、保存拒绝保留草稿、保存前目录变化、真实 Header 与 Native override、执行中暂停快捷切换、空目录/读取失败/只读、重复保存、全局模式写入、非推理模型显式清除旧映射和未执行计划状态。
+- `npm run build`、`npm pack`、`node --check lib/client.js`、`git diff --check` 通过。打包包含同步的 lib、Bundle patch、S3 文档、LICENSE、THIRD_PARTY_NOTICES 和完整 Jev MIT 许可。运行时依赖未变；React/ReactDOM/jsdom/esbuild 仅开发依赖。
+- 独立 `/tmp/dsh-s3-package-smoke` 执行 `npm install --omit=dev <tarball>`，实际导入正式插件入口和 effortFor 预览，检查 Bundle/文档/完整许可齐备：通过。生产安装没有 React/ReactDOM/jsdom/esbuild/AgentLoop testkit；仅原有两项依赖和原生 system-prompt peer。
+
+### 实际 DSH Web / Chromium
+
+在独立 `/tmp` 目录安装官方 `@deepseek-ai/dsh@0.2.1-alpha.2`，用隔离 DSH_HOME，执行
+`dsh plugin --profile web add link:/workspace/dsh-adaptive-router`，再运行
+`dsh web --patch <离线 adapter overlay> --no-open --port 18731`。
+Playwright/Chromium 同样安装于临时目录，不进入项目依赖或发布包。
+使用真实原生 LlmAdapter fixture 声明两款 64K/200K 模型及 off/low/medium/high/max；仅返回固定离线文本，不调用线上模型或 Jev。
+
+| 实际浏览器步骤 | 结果 |
+| --- | --- |
+| 打开原生 Plugins → Bundle，发现 Provider/模型，勾选候选、选择 simple、保存 | 通过；Host 原生配置写入成功，无手工编辑插件 YAML |
+| 停止并重新启动 Host，重新打开配置 | 通过；候选勾选与能力恢复 |
+| 快捷菜单切换插件级模式，再发送简单问候 | 通过；实际 Header/标签为 Auto · Native Quick · off |
+| 用原生模型选择器改为 Native Balanced | 通过；提交前仍显示上一请求；提交后 Manual · Native Balanced · Default。fixture 未声明默认档位，正确显示 Default |
+| 禁用后创建会话、重新启用 | 通过；禁用时没有标签，配置未清空，重新启用仍保留候选 |
+| 原生插件管理器确认卸载后创建会话，再用官方 CLI 重装 | 通过；卸载后 Slot 标签移除；重装恢复此前勾选的候选与 simple 能力 |
+| 暗色、亮色及 390px 窄屏 | 通过；截图检查；窄屏无横向页面溢出，标签不覆盖发送按钮 |
+| 上述最终浏览器流程的 pageerror | 0 |
+
+浏览器依赖与 adapter fixture 只用于验证，不向用户暴露测试模型或添加第二套目录。
+未执行真实付费 Provider/Jev 在线请求、远端只读部署端到端、跨提供商质量评测；目录异常与只读由上述 DOM 回归覆盖。
+源算法和 PR #3 生命周期未改；没有 Release、npm 发布或合并 main。

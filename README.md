@@ -15,7 +15,8 @@
 - 原生显式模型/档位选择优先；四种模式和长期手动锁；子 Agent 不干预。
 - 超时、缺密钥、无地址、异常标签、模型目录错误均保留原调用；目录等待也有上限。
 - 检测 Jev Effort Selector 冲突后，本插件退出自动控制。
-- 最小 Web 状态标签只显示 DSH 已记录的实际模型/档位；悬浮说明决策或回退原因。使用 DSH 自动生成的配置表单，不另建设置页面。
+- DSH 原生插件页提供可搜索、按 Provider 分组的候选模型选择器、能力/用途与合法档位配置；无需手工查 ID 或编辑 YAML。
+- 输入框状态标签显示 DSH 已记录的实际模型/档位；点击原生菜单查看原因、异常和插件级模式，空闲时可快速切换。
 
 ## 安装
 
@@ -60,7 +61,18 @@ dsh plugin --profile web remove dsh-plugin-adaptive-router
 
 ## 配置
 
-在 Web「插件」中打开本包的生成配置表单。也可在
+在 **Web → 插件 → dsh-plugin-adaptive-router** 打开配置：
+
+1. 开启智能路由，选择四种模式之一。
+2. 在现有 Host 模型目录中搜索并勾选候选，设置「简单/均衡/复杂」能力和「通用/编程/推理」用途。默认不授权任何模型；能力由用户设置。
+3. 各任务档位选择「自动映射」或该模型原生声明的合法档位；支持显式 max/xhigh。没有档位的模型由模型默认处理。暂时不在目录中的旧候选保留，可停用或显式移除。
+4. 填写 Jev 完整地址及凭据引用（默认 `JEV_API_KEY`），密钥在 DSH 原生凭据界面管理。
+5. 点击「保存」写入 Host。离开页面放弃未保存草稿；保存失败或修订冲突会明确提示。仅有读权限的连接不能写入。
+
+候选取消勾选会停用而保留能力配置；「移除这项配置」才删除它。若模型已不再声明档位，旧映射不会自动丢弃，可显式清除恢复模型默认。
+输入框标签点击后显示当前模式、真实 Provider/Model/Effort 和最近原因。快捷模式是**所有会话共享的插件级配置**，不是 Session 私有模式；当前会话执行中或只读时禁止快捷修改，其他会话仍遵守原有配置修订与手动优先约束。原生模型选择器保持独立且优先。
+
+仍可选用 YAML 配置。也可在
 `$DSH_HOME/profiles/web/cordis.patch.yml` 中加入以下标准配置覆盖层。
 下面的 provider/model 是占位符，必须替换为 DSH 原生模型选择器中的真实注册 ID。
 
@@ -102,7 +114,7 @@ dsh plugin --profile web remove dsh-plugin-adaptive-router
           complex: high
 ```
 
-该补丁按 row id 覆盖，替换整段 config；其余字段使用插件默认值。保存后重启，或在生成表单中保存 volatile 配置即时生效。轮中更改候选池/模式会停止复用旧自动决定，下一轮重新决策。
+该补丁按 row id 覆盖，替换整段 config；其余字段使用插件默认值。保存后重启，或在原生插件配置页保存 volatile 配置即时生效。轮中更改候选池/模式会停止复用旧自动决定，下一轮重新决策。
 
 ### Jev 密钥与隐私
 
@@ -163,10 +175,10 @@ npm pack         # 预构建 Plugin Bundle，包内包含 lib/ 和许可证
 测试使用真实 DSH 生命周期、原生选择器请求控制、日志投影、请求校验与 provider dispatch；本地 Jev HTTP/测试 LLM 适配器不代表付费线上模型效果。测试结果见 `docs/VALIDATION.md`。
 
 - 此环境没有真实 Jev / LLM 凭据；未执行线上模型调用或质量测评。
-- Web 标签已实现，但未在完整浏览器 profile 中做人眼验证。显示以最终原生 Header 为准，不能保证请求后来在远端成功完成。
-- 原生模型选择的意图投影在测试中用契约夹具提供；原生请求覆盖器使用真实 `installModelSelection`。完整 Web SessionController/浏览器端到端未验证。
+- S3 已在完整目标版本 DSH Web + Chromium 中验证配置保存/重启恢复和原生状态菜单，使用离线注册模型，不代表真实线上服务效果。显示以最终原生 Header 为准，不能保证远端最终成功完成。
+- 单元/AgentLoop 测试中的意图投影使用契约夹具，原生覆盖器使用真实 `installModelSelection`；另已在完整 Web 中实际操作原生选择器，验证提交前标签不变、提交后手动模型优先。
 - 仅保证主会话；`origin: subagent` 不参与。没有统一工具能力元数据，不虚构模型工具支持评分。
 - 与已知 Jev Effort Selector 冲突时退出本插件全部自动控制。其他未声明的 request 修改插件无法通用识别；建议同一会话只用一个自动路由器。
 - 只验证 `0.2.1-alpha.2`，旧版本不在本阶段兼容承诺内；未发布 npm。
 
-源码研究与复用记录：[docs/RESEARCH.md](docs/RESEARCH.md)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。本项目 MIT。
+源码研究与复用记录：[docs/RESEARCH.md](docs/RESEARCH.md)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。本项目 MIT。S3 原生交互、接口和验证记录见 [docs/S3-NATIVE-UI.md](docs/S3-NATIVE-UI.md)。

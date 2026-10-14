@@ -19,8 +19,10 @@ Source revision: `9b8ac7dd8668b936dbd3cde1c93c12eecbf3fca8`.
 - `lib/index.js` `askJev`, `resolveKey`, `readConfig`, pre-step/request/manual/abort
   mechanisms → `src/classifier.ts`, `src/index.ts`, `src/config.ts`: adapted to a single
   capability-tier/role classifier, registered model pool, four modes and current DSH.
-- `lib/client.js` Slot/Projection/SRC Remote pattern → `src/client.js`: independently
-  reduced to a small actual-header chip; no upstream UI layout, icons or settings form copied.
+- `lib/client.js` Slot/Projection/SRC Remote pattern → `src/client.js`: adapted actual-header status
+  integration. S3 adds independently written native configuration and menu UI; no upstream
+  UI layout, icons or settings form copied. The browser bundle embeds the same attributed
+  effort ladder/mapping helpers for previews, rather than a second algorithm.
 
 The full required MIT copyright and permission notice is shipped in
 [licenses/jev-effort-selector-MIT.txt](licenses/jev-effort-selector-MIT.txt).
@@ -35,7 +37,7 @@ Compiled copies in `lib/` derive from the same source and have the same attribut
 | OpenSquilla | https://github.com/TokenRhythm/opensquilla | Apache-2.0 | Surface-feature gating, history-sensitive routing and joint route/thinking design. No source, weights or runtime copied; no Apache derivative distributed. |
 | Claude Code Templates | https://github.com/davila7/claude-code-templates | MIT, Copyright (c) 2025 Daniel (San) Ávila, for the reviewed routing mod and dashboard | Evaluated the pure Jev routing policy, confidence thresholds and pending-input safeguards. No source or dependency included. |
 | Jevcore | https://github.com/PerryLink/jevcore | Apache-2.0 | Evaluated independent SystemOne/Choice client and resilience costs. Not included as code or dependency; its NOTICE was reviewed. |
-| DeepSeek Harness | https://github.com/deepseek-ai/deepseek-harness | MIT, Copyright (c) 2026 DeepSeek | Public lifecycle, metadata, projection, settings, bundle and slot contracts. Core is unmodified; the native `dsh-system-prompt` peer supplies public prompt rendering, and other npm packages are development test dependencies. No DSH source copied into the production plugin. |
+| DeepSeek Harness | https://github.com/deepseek-ai/deepseek-harness | MIT, Copyright (c) 2026 DeepSeek | Public lifecycle, metadata, projection, settings, bundle and slot contracts; S3 uses public ConfigForms/modelCatalog and Host-provided UI primitives via ModuleLoader. Core is unmodified; the native `dsh-system-prompt` peer supplies public prompt rendering, and other npm packages are development test dependencies. No DSH source copied into the production plugin. |
 
 Reviewed commit identifiers and source paths are in [docs/RESEARCH.md](docs/RESEARCH.md).
 The S2 comparison and exact reuse decision are in [docs/S2-UPSTREAM-AUDIT.md](docs/S2-UPSTREAM-AUDIT.md).
@@ -47,3 +49,5 @@ The S2 comparison and exact reuse decision are in [docs/S2-UPSTREAM-AUDIT.md](do
 
 No Python, proxy, ML runtime or model weights are bundled. Lockfile records the
 actual development test dependencies; their license files remain in their npm packages.
+
+S3 public API source paths and fixed target revision are recorded in [docs/S3-NATIVE-UI.md](docs/S3-NATIVE-UI.md).

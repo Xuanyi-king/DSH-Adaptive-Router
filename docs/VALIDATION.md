@@ -101,3 +101,11 @@ modelSelection 的 intent projection 是测试契约夹具；原生请求覆盖�
 详细能力对照、固定上游提交、行为变化与未采用理由见
 [S2-UPSTREAM-AUDIT.md](S2-UPSTREAM-AUDIT.md)。没有线上准确率或性能测评；
 原有真实服务、完整 Web/CLI 安装验证限制不变。
+
+
+## 合并前 review 补充：具名 high 上限
+
+发现上游 `deriveLadder` 对 `[low, high, max]` 的排序可能把 max 当成默认复杂档位。
+在不改变 Jev/选模/会话生命周期的前提下，将默认梯度限制在具名 high 及之前的广告档位；显式 `effortByTier` 的 max/xhigh 仍合法。
+直接执行同步后的 `lib/router.js` 六组边界与复杂档映射探针通过，并添加 1 个策略回归。
+**本补丁之后的完整 `npm test` 和 PR #3 合并后的集成组合尚未在当前环境重新执行**；先前的 S2 40/40、PR #3 40/40 属于各自分支的验证记录。

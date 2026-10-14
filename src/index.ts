@@ -1,7 +1,8 @@
 import type { Context } from "@deepseek-ai/cordis";
-import type { Agent } from "@deepseek-ai/dsh-agent";
-import type { LlmCallConfig, LlmResolvedModelInfo } from "@deepseek-ai/dsh-llm";
+import type { Agent, PreStepDecision } from "@deepseek-ai/dsh-agent";
+import type { LlmCallConfig, LlmResolvedModelInfo, UserMessage } from "@deepseek-ai/dsh-llm";
 import type {} from "@deepseek-ai/dsh-session-projection";
+import { renderPrompt, renderContextSnapshot, type PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
 import { z } from "zod";
 import { Config, readConfig, type ConfigValues } from "./config.js";
 import { askJev, localSimple } from "./classifier.js";
@@ -21,7 +22,7 @@ import {
 } from "./context.js";
 export { Config };
 export const name = "adaptive-router";
-export const inject = ["sessionProjections", "llm"];
+export const inject = ["sessionProjections", "llm", "systemPrompt"];
 type ContextState = z.infer<typeof ContextSchema>;
 const SelectionSchema = z.object({
   provider: z.string(),
@@ -48,7 +49,11 @@ interface RecordState {
   reason: string;
   control: string;
   configKey?: string;
+  registryRevision?: number;
+  modelInfo?: LlmResolvedModelInfo;
+  capacityBlocked?: string;
 }
+class ContextCapacityError extends Error {}
 const isSubagent = (agent: Agent) => agent.session.header.origin === "subagent";
 const selectionOf = (config: LlmCallConfig): Selection => ({
   provider: config.provider,
@@ -100,10 +105,62 @@ export function apply(ctx: Context, config: object) {
   const held = new WeakMap<Agent, RecordState>();
   const pending = new WeakMap<
     Agent,
-    { turn: number; text: string; material: boolean; images: boolean }
+    { turn: number; text: string; material: boolean; images: boolean;
+      messages?: UserMessage[];
+      assembly?: PromptAssembly; promptBytes?: number; batchRevision?: number }
   >();
   const records = new Map<string, RecordState>();
   const settings = () => readConfig(config);
+  let registryRevision = 0;
+  let prependRevision = 0, captureRevision = -1;
+  let seatingCapture = false;
+  let stopCapture: (() => unknown) | undefined;
+  let assemblyReliable = true;
+  function seatCapture() {
+    if (captureRevision === prependRevision) return;
+    seatingCapture = true;
+    try {
+      stopCapture?.();
+      stopCapture = ctx.on("agent/pre-step", captureStep, { prepend: true });
+      captureRevision = prependRevision;
+    } finally { seatingCapture = false; }
+  }
+  ctx.on("llm/adapters-updated", () => { registryRevision++; });
+  ctx.on("system-prompt/assemble", async (assembly, context, next) => {
+    const resolved = await next();
+    const agent = context.agent;
+    if (agent && !isSubagent(agent)) {
+      const previous = pending.get(agent);
+      try {
+        // Complete sections may be restored by DSH after this waterfall returns.
+        const promptBytes = Math.max(
+          Buffer.byteLength(renderPrompt(resolved), "utf8"),
+          Buffer.byteLength(renderPrompt({ ...resolved, sections: assembly.sections }), "utf8"),
+        );
+        pending.set(agent, { turn: -1, text: "", material: false, images: false,
+          ...previous, assembly: resolved, promptBytes });
+      } catch {
+        // An unpriceable assembly must not break an otherwise valid DSH request.
+        pending.set(agent, { turn: -1, text: "", material: false, images: false,
+          ...previous, assembly: undefined, promptBytes: undefined });
+      }
+    }
+    return resolved;
+  }, { prepend: true });
+  // These are documented Cordis notifications. Its runtime passes EventOptions
+  // although the current declaration still names this argument a boolean.
+  ctx.on("internal/listener", (event, _listener, rawOptions) => {
+    const options: unknown = rawOptions;
+    const prepend = options === true || (typeof options === "object" && options !== null
+      && "prepend" in options && options.prepend === true);
+    if (!prepend || seatingCapture) return;
+    if (event === "agent/pre-step") prependRevision++;
+    if (event === "system-prompt/assemble") assemblyReliable = false;
+  });
+  ctx.on("internal/dispatch", (_mode, event) => {
+    // Cordis takes its listener snapshot AFTER this synchronous notification.
+    if (event === "agent/pre-step") seatCapture();
+  });
   function manualState(agent: Agent): { pending: unknown } | undefined {
     // SessionController owns this optional projection, not this plugin.
     const projections = ctx.sessionProjections as {
@@ -113,10 +170,11 @@ export function apply(ctx: Context, config: object) {
       | { pending: unknown }
       | undefined;
   }
-  function canApply(agent: Agent, snapshot: ConfigValues, signal: AbortSignal) {
+  function canApply(agent: Agent, snapshot: ConfigValues, signal: AbortSignal, revision = registryRevision) {
     const live = settings();
     return (
       !signal.aborted &&
+      revision === registryRevision &&
       live.enabled &&
       JSON.stringify(live) === JSON.stringify(snapshot) &&
       !conflict() &&
@@ -161,14 +219,21 @@ export function apply(ctx: Context, config: object) {
     },
     wire: { viewSchema: StatusSchema, view: (state) => state },
   });
-  ctx.on("agent/pre-step", (payload, next) => {
-    if (payload.step === 1 && !isSubagent(payload.agent)) {
-      const messages = payload.messages.filter(
+  async function captureStep(payload: { agent: Agent; turn: number; step: number;
+    messages: UserMessage[]; signal: AbortSignal }, next: () => Promise<PreStepDecision>) {
+    const boundaryRevision = captureRevision;
+    const decision = await next();
+    if (decision.kind !== "reject" && !isSubagent(payload.agent)) {
+      const messages = decision.messages.filter(
         (m) => m.source?.kind === "user",
       );
       pending.set(payload.agent, {
+        ...pending.get(payload.agent),
+        messages: decision.messages,
+        batchRevision: boundaryRevision,
         turn: payload.turn,
-        text: messages.map(messageText).filter(Boolean).join("\n"),
+        text: payload.step === 1 ? messages.map(messageText).filter(Boolean).join("\n")
+          : pending.get(payload.agent)?.text ?? "",
         material: messages.some((m) =>
           m.content.some((b) => b.type !== "text"),
         ),
@@ -177,8 +242,9 @@ export function apply(ctx: Context, config: object) {
         ),
       });
     }
-    return next();
-  });
+    return decision;
+  }
+  seatCapture();
   async function keyFor(s: ConfigValues): Promise<string> {
     const credentials = ctx.get("credentials") as
       | { resolve(name: string): Promise<{ value: string } | undefined> }
@@ -190,8 +256,47 @@ export function apply(ctx: Context, config: object) {
       return "";
     }
   }
+  function contextBytes(agent: Agent, signal: AbortSignal): number | undefined {
+    const input = pending.get(agent);
+    if (!assemblyReliable || !input?.assembly || !input.messages || input.promptBytes === undefined
+      || input.batchRevision !== prependRevision) return undefined;
+    const history = agent.session.deriveMessages();
+    // Attachments and deferred tools need adapter-owned pricing: do not guess.
+    if ([...history, ...input.messages].some(message => message.content.some(
+      block => !["text", "reasoning", "tool-call"].includes(block.type),
+    )) || input.assembly.tools.some(tool => tool.deferLoading)) return undefined;
+    try {
+      const refreshed = ctx.systemPrompt.refreshContext(input.assembly, { agent, scope: agent, signal });
+      // UTF-8 bytes deliberately overcount typical text tokens. Include all offered
+      // inputs, history, system/runtime text and tool schemas; no chars/4 shortcut.
+      return Buffer.byteLength(JSON.stringify([...history, ...input.messages]), "utf8")
+        + input.promptBytes + Buffer.byteLength(renderContextSnapshot(refreshed), "utf8")
+        + Buffer.byteLength(JSON.stringify(input.assembly.tools), "utf8");
+    } catch { return undefined; }
+  }
+  function fitsContext(agent: Agent, original: LlmCallConfig, info: LlmResolvedModelInfo,
+    currentInfo: LlmResolvedModelInfo | undefined, signal: AbortSignal, reuse = false): boolean {
+    if (!reuse && sameModel(original, { provider: info.provider, model: info.id })) return true;
+    const window = info.context?.contextWindow;
+    if (!window) return false;
+    const bytes = contextBytes(agent, signal);
+    if (bytes === undefined) return !reuse && !!currentInfo?.context && window >= currentInfo.context.contextWindow;
+    const output = original.maxTokens ?? info.defaultMaxTokens ?? Math.floor(window / 2);
+    // Leave framing slack plus the configured/native output cap, or half the
+    // window when the provider has not declared its output default.
+    return bytes + output + 2048 <= window;
+  }
+  async function validateHeld(selected: Selection, signal: AbortSignal) {
+    if (!ctx.llm.listProviders().some(provider => provider.id === selected.provider)) return undefined;
+    if (!(await ctx.llm.listModels(selected.provider)).some(model => model.id === selected.model)) return undefined;
+    const info = await ctx.llm.resolveModelInfo(selected.provider, selected.model, signal);
+    return selected.reasoningEffort === undefined || info.reasoning?.efforts.some(
+      effort => String(effort.id) === selected.reasoningEffort,
+    ) ? info : undefined;
+  }
   async function poolFor(
-    current: Selection,
+    current: LlmCallConfig,
+    agent: Agent,
     s: ConfigValues,
     images: boolean,
     signal: AbortSignal,
@@ -218,7 +323,7 @@ export function apply(ctx: Context, config: object) {
       }
     }
     const currentInfo = await available(current);
-    const pool: Candidate[] = [];
+    const pool: (Candidate & { modelInfo: LlmResolvedModelInfo })[] = [];
     for (const candidate of s.candidates.filter((m) => m.enabled)) {
       if (pool.some((m) => sameModel(m, candidate))) continue;
       const info = await available(candidate);
@@ -230,25 +335,19 @@ export function apply(ctx: Context, config: object) {
           : candidate.images === true)
       )
         continue;
-      // Preserve capacity on automatic switches. DSH does the exact admission check;
-      // unknown or smaller capacity cannot safely be chosen for existing context.
-      if (
-        !sameModel(current, candidate) &&
-        currentInfo?.context?.contextWindow &&
-        (!info.context ||
-          info.context.contextWindow < currentInfo.context.contextWindow)
-      )
-        continue;
+      if (!fitsContext(agent, current, info, currentInfo, signal)) continue;
       pool.push({
         ...candidate,
         efforts: (info.reasoning?.efforts ?? []).map((e) => String(e.id)),
         contextWindow: info.context?.contextWindow,
+        modelInfo: info,
       });
     }
     if (currentInfo && !pool.some((m) => sameModel(m, current)))
       pool.push({
         ...current,
         tier: "complex",
+        modelInfo: currentInfo,
         roles: ["general", "coding", "reasoning"],
         efforts: (currentInfo.reasoning?.efforts ?? []).map((e) =>
           String(e.id),
@@ -257,7 +356,7 @@ export function apply(ctx: Context, config: object) {
     const currentUnavailable =
       !providers.has(current.provider) ||
       catalogs.get(current.provider)?.has(current.model) === false;
-    return { pool, currentUnavailable, available };
+    return { pool, currentInfo, currentUnavailable, available };
   }
   ctx.on(
     "agent/request",
@@ -285,16 +384,40 @@ export function apply(ctx: Context, config: object) {
         if (!manual || !("pending" in manual))
           return pass("manual-intent-unavailable", "Native");
         if (manual.pending !== null) return pass("native-manual", "Manual");
+        const inspectedRevision = registryRevision;
         const prior = held.get(agent);
         if (prior?.turn === turn && prior.selection === null) return original;
         if (prior?.turn === turn && prior.configKey !== JSON.stringify(s))
           return pass("settings-changed", "Native");
+        if (prior?.turn === turn && prior.selection) {
+          // An explicit capacity stop must remain a stop on a retry: original
+          // may already be the small model recorded in DSH's persisted header.
+          if (prior.capacityBlocked) throw new ContextCapacityError(prior.capacityBlocked);
+          let info = prior.modelInfo;
+          if (prior.registryRevision !== inspectedRevision) {
+            info = await withinBudget(validateHeld(prior.selection, signal), s.timeoutMs, signal);
+            if (!info) return pass("held-route-unavailable");
+          }
+          if (!canApply(agent, s, signal, inspectedRevision)) return pass("decision-superseded", "Native");
+          const fits = info && fitsContext(agent, original, info, undefined, signal, true);
+          if (!canApply(agent, s, signal, inspectedRevision)) return pass("decision-superseded", "Native");
+          if (!fits) {
+            const message = `Adaptive Router stopped this turn: the latest context exceeds or cannot safely be priced within the cached ${prior.selection.provider}/${prior.selection.model} window (${info?.context?.contextWindow ?? "unknown"}). Select a larger-context model or compact the conversation before continuing.`;
+            save(agent, { ...prior, reason: "context-capacity-blocked", control: "Blocked", capacityBlocked: message });
+            throw new ContextCapacityError(message);
+          }
+          if (!canApply(agent, s, signal, inspectedRevision)) return pass("decision-superseded", "Native");
+          save(agent, { ...prior, modelInfo: info, registryRevision: inspectedRevision });
+          return replace(original, prior.selection);
+        }
         const text = pending.get(agent);
         const context = ctx.sessionProjections.stateOf(
           agent.session,
           "adaptiveRouterContext",
         );
         const previous = context?.previous ?? null;
+        if (step !== 1 || !context || text?.turn !== turn || !text.text.trim())
+          return pass("no-user-task", "Native");
         // Read the actual projected surface so compaction/offloading is respected.
         const images =
           (text?.images ?? false) ||
@@ -303,31 +426,11 @@ export function apply(ctx: Context, config: object) {
             .some((m) =>
               m.content.some((b) => b.type === "image" && !b.offloaded),
             );
-        const { pool, currentUnavailable, available } = await withinBudget(
-          poolFor(current, s, images, signal),
+        const { pool, currentInfo, currentUnavailable, available } = await withinBudget(
+          poolFor(original, agent, s, images, signal),
           s.timeoutMs,
           signal,
         );
-        if (prior?.turn === turn && prior.selection) {
-          const info = await withinBudget(
-            available(prior.selection),
-            s.timeoutMs,
-            signal,
-          );
-          if (
-            !info ||
-            (prior.selection.reasoningEffort !== undefined &&
-              !info.reasoning?.efforts.some(
-                (e) => String(e.id) === prior.selection!.reasoningEffort,
-              ))
-          )
-            return pass("held-route-unavailable");
-          if (!canApply(agent, s, signal))
-            return pass("decision-superseded", "Native");
-          return replace(original, prior.selection);
-        }
-        if (step !== 1 || !context || text?.turn !== turn || !text.text.trim())
-          return pass("no-user-task", "Native");
         const local = localSimple(text.text, previous, text.material);
         const decision =
           local ??
@@ -347,7 +450,7 @@ export function apply(ctx: Context, config: object) {
             signal,
           ));
         // Settings/manual picks can change while the classifier is awaiting I/O.
-        if (!canApply(agent, s, signal))
+        if (!canApply(agent, s, signal, inspectedRevision))
           return pass("decision-superseded", "Native");
         if ("failure" in decision) {
           // Never pin a classifier fallback as a successful task-level decision.
@@ -380,6 +483,8 @@ export function apply(ctx: Context, config: object) {
                   reason: decision.failure,
                   control: "Fallback",
                   configKey: JSON.stringify(s),
+                  registryRevision: inspectedRevision,
+                  modelInfo: fallback.modelInfo,
                 });
                 return replace(original, selected);
               }
@@ -417,7 +522,8 @@ export function apply(ctx: Context, config: object) {
             ))
         )
           return pass("validation-failed");
-        if (!canApply(agent, s, signal))
+        if (!fitsContext(agent, original, info, currentInfo, signal)) return pass("context-too-large");
+        if (!canApply(agent, s, signal, inspectedRevision))
           return pass("decision-superseded", "Native");
         const control = s.mode === "FULL_AUTO" ? "Auto" : s.mode;
         save(agent, {
@@ -431,9 +537,14 @@ export function apply(ctx: Context, config: object) {
               : result.reason,
           control,
           configKey: JSON.stringify(s),
+          registryRevision: inspectedRevision,
+          modelInfo: info,
         });
         return replace(original, selected);
-      } catch {
+      } catch (error) {
+        // Known unsafe cached input is an intentional, visible stop, not a
+        // router malfunction that should silently pass the persisted route.
+        if (error instanceof ContextCapacityError) throw error;
         return pass("router-error");
       }
     },

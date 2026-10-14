@@ -37,7 +37,7 @@ A = 原样独立使用，B = 保留算法、少量适配，C = 仅参考思想�
 | 缓存与会话状态 | `src/index.ts` held/pending WeakMap、configKey、registryRevision、逐步容量检查；重启 refold | Jev [J] `turnDecisions/pendingText`；LiteLLM [L] `_decision_is_pinnable/_uses_tier_pin/_pin_model_for_tier`；Claude [CP] `pendingDecisions` | 一轮一次已实现。Jev 按 session ID 的目录 ladder 长缓存没有当前修订失效保护；LiteLLM 多租户 TTL pin 需缓存接口；Claude 无 turn ID 的排队防护不适用于 DSH 已提供 turn 的 seam。移植会重复状态 | **D，保留**；正常 held 不查目录，通知后只重验目标 |
 | 异常与超时 | `src/classifier.ts` AbortController/finally；`src/index.ts` `withinBudget/keyFor`，无重试 | Jev [J] `askJev/resolveKey`；Pi [P] `makeTimeoutSignal`；LiteLLM [LJ] `HttpJevClassifierClient.evaluate` | Jev 已适配；目录/凭据等待也有限制。Pi 的 timer 不能替代 metadata 等待上限；LiteLLM HTTP/日志/提供商归一化成本高，收益重复 | **B/D，保留**；不同时维护多个 Jev 客户端 |
 
-## 3. 确定性对照与唯一行为变化
+## 3. 确定性对照与有限行为变化
 
 实际运行本地源码探针：TypeScript AST 提取 Pi 内部纯函数及其 THINKING_LEVELS/BUILTIN_CONFIG，transpile 后在 VM 中执行，未调用 `complete` 或 Pi runtime；直接导入 Claude 的无 I/O policy.ts。OpenSquilla 用 Python AST 仅执行 `extract_features/classify_features` 与常量，没有安装 ML 包。临时脚本不进入插件或分发包；不是线上分类质量评测。
 
@@ -49,9 +49,9 @@ A = 原样独立使用，B = 保留算法、少量适配，C = 仅参考思想�
 | 自定义合法档位与不支持 xhigh 的模型 | DSH 广告列表/effortByTier 校验；无 reasoning 时不发送 effort | Pi `validThinking('max')=undefined`；Claude `effortLevel(3)='xhigh'`，route 不接收模型 legal efforts 或任务完成状态 | 不能用固定跨模型档位替代原生声明 |
 | 广告顺序 `[medium, brief, standard, high, max]`，无显式映射，moderate/coding | 修改前 `brief`，修改后 `standard` | Jev `deriveLadder` 输出 `[medium, standard, high]` | **恢复原始中点优先**。ID 只是模型自己的声明；DSH 接受非空唯一字符串，不根据名字推断跨模型能力 |
 
-唯一生产改动在 `src/router.ts`：named medium 与已选端点冲突时，先尝试声明顺序的中点，再找其他合法档。保留当前去重、声明顺序、per-tier 配置及最深档选择。`lib/router.js` 同步重建。
+生产改动仅在 `src/router.ts` 的 `deriveLadder`：恢复 named medium 与端点冲突时的中点优先，同时修正一个继承自上游的边界：当声明顺序为 `[low, high, max]` 时，上游先选出 `max` 再按顺序排序，导致 complex 自动使用 `max`。现在仅从 `high` 及其之前的合法档位构建默认 ladder；`max/xhigh` 仍可通过明确的 `effortByTier` 使用。`lib/router.js` 同步。没有更改候选模型、Jev 或 DSH 生命周期。
 
-回归先在 main 算法上运行并失败，实际 brief/预期 standard；恢复后通过。另对八组空/单/双/常规/非标准顺序 ladders 运行原上游函数与当前函数的一致性断言，全部通过。常规 low/medium/high 和已配置映射行为不变；只有上述端点碰撞类映射可能改变。这证明 ordinal 映射恢复上游意图，不证明线上答案质量改善。
+中点回退修复先在 main 算法上复现失败（实际 brief，预期 standard），之后通过。原有八组空/单/双/常规/非标准顺序 ladder 的上游一致性探针曾通过；**新增的 `high` 上限保护是有意偏离上游**，不应再宣称所有输入均与 Jev 原函数等价。直接执行打包 JS 的六组 ladder 和 `effortFor(complex)` 检查通过，专门补充策略回归覆盖 `[low,high,max,xhigh]`、异常广告顺序及显式 opt-in。默认使用 max 的行为变化只发生在 `high` 前还有合法档位而其后有更高档时，不证明线上答案质量改善。
 
 Jev 分类仍从多档 ladder Choice 改为三个任务能力 tier，并增加 role。这是联合模型路由需要的分工，不是丢弃上下文算法；默认派生 ladder 本来也只有 2–3 档，额外合法档可通过 effortByTier 配置。没有证据支持再问一个 effort 请求或引入五档任务 taxonomy。保留原有信封字段、裁剪、unfinished 判据和低置信度更强 top-2 策略；当前额外过滤未知/非有限概率，没有回退到信任任意 Choice。
 
@@ -61,14 +61,14 @@ Jev 分类仍从多档 ladder Choice 改为三个任务能力 tier，并增加 r
 
 唯一新增复用仍来自 Jev 同一提交的 `lib/index.js/deriveLadder`。MIT Copyright/完整许可已经在 `licenses/jev-effort-selector-MIT.txt`，源码出处及修改记录更新在 `THIRD_PARTY_NOTICES.md`。其余四个仓库仅研究，没有把探针抽取的源码复制入仓库；没有 enterprise、模型资产或 Apache 衍生代码进入包，因此不新增其 LICENSE/NOTICE。
 
-生产源码净增 **3 行**，对应 lib 净增 3 行；新增 **1 个 13 行回归测试**。没有增加模块、抽象层、网络请求、分类次数、目录查询、配置项或依赖；package.json/package-lock.json 不变。新增本审查文档，验证/来源文档作必要更新。
+生产改动限于 `deriveLadder` 的中点回退与具名 high 上限；新增两个小型策略回归（含合并前最后补上的上限测试）。没有增加模块、抽象层、网络请求、分类次数、目录查询、配置项或依赖；package.json/package-lock.json 不变。
 
 ## 5. 验证
 
 - 基线 `npm ci --no-audit --no-fund`，`npm test`：**39/39**，0 失败/跳过。
-- 修改后 `npm test`：**40/40**，0 失败/跳过（9 个策略测试、31 个实际 DSH AgentLoop 集成测试）。原有手动异步竞态、候选移除、无候选、分类超时/失败、禁用卸载、会话隔离、同 Turn 缓存/容量增长、非推理模型回归均保留。
+- PR #2 原提交 `npm test`：**40/40**，0 失败/跳过（9 个策略测试、31 个实际 DSH AgentLoop 集成测试）。随后审查补充一项 high 上限回归，已用实际打包 JS 直接执行六组边界 + `effortFor` 验证；**补充后的完整 npm test 尚未重新执行**，合并 main 后需复核。原有异步竞态、目录、上下文增长等测试代码没有删改。
 - 最终构建、pack、生产安装冒烟结果见 [VALIDATION.md](VALIDATION.md) 的 S2 小节。
-- 典型 tier/role、Pi/Claude/OpenSquilla 对照及八组 ladder parity 探针均通过预期断言。未运行 LiteLLM/OpenSquilla 完整服务或模型；没有真实 Jev/LLM 密钥、完整浏览器/DSH CLI 安装或线上质量数据。
+- 典型 tier/role、Pi/Claude/OpenSquilla 对照，以及补充前八组 ladder parity 探针符合当时预期；新增 high 上限规则故意更严格，且默认 cap 行为不再与原 Jev 完全等价。未运行 LiteLLM/OpenSquilla 完整服务或模型；没有真实 Jev/LLM 密钥或线上质量数据。
 
 ## 6. 最终架构与合并建议
 
@@ -76,7 +76,7 @@ Jev 分类仍从多档 ladder Choice 改为三个任务能力 tier，并增加 r
 
 手动 intent、禁用、模式锁、冲突与 subagent 判据在自动路由之前。held 复用不会再分类/重建候选池；配置及目录通知失效判据保留，最新容量仍每步检查，已知不安全缓存请求显式停止，不假定 original 恢复强模型。生产 `src/index.ts/context.js/classifier.ts/config.ts/client.js` 没有变更。
 
-建议合并包含该小改动和审查记录的独立 PR；风险限于少见档位声明顺序的中间档回归。没有实施更大替换，也没有开始 S3。
+建议合并包含这两项局部档位修正和审查记录的独立 PR；风险限于少见的档位声明顺序及 `high` 后包含 `max/xhigh` 的默认复杂任务映射。没有实施更大替换，也没有开始 S3。
 
 [J]: https://github.com/justhalfbit/dsh-plugin-jev-effort-selector/blob/9b8ac7dd8668b936dbd3cde1c93c12eecbf3fca8/lib/index.js
 [JW]: https://github.com/justhalfbit/dsh-plugin-jev-effort-selector/blob/9b8ac7dd8668b936dbd3cde1c93c12eecbf3fca8/lib/client.js

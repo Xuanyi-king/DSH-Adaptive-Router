@@ -64,5 +64,8 @@
   "homepage": "https://github.com/Xuanyi-king/DSH-Adaptive-Router#readme",
   "bugs": {
     "url": "https://github.com/Xuanyi-king/DSH-Adaptive-Router/issues"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-system-prompt": "0.2.1-alpha.2"
   }
 }

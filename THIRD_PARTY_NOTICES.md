@@ -29,7 +29,7 @@ Compiled copies in `lib/` derive from the same source and have the same attribut
 | LiteLLM | https://github.com/BerriAI/litellm | MIT for reviewed non-enterprise code, Copyright (c) 2023 Berri AI | Complexity tiers, conservative heuristic gating, classification fallback, session continuity. No enterprise code copied. |
 | OpenSquilla | https://github.com/TokenRhythm/opensquilla | Apache-2.0 | Surface-feature gating, history-sensitive routing and joint route/thinking design. No source, weights or runtime copied; no Apache derivative distributed. |
 | Jevcore | https://github.com/PerryLink/jevcore | Apache-2.0 | Evaluated independent SystemOne/Choice client and resilience costs. Not included as code or dependency; its NOTICE was reviewed. |
-| DeepSeek Harness | https://github.com/deepseek-ai/deepseek-harness | MIT, Copyright (c) 2026 DeepSeek | Public lifecycle, metadata, projection, settings, bundle and slot contracts. Core is unmodified; npm packages are development test dependencies. No DSH source copied into the production plugin. |
+| DeepSeek Harness | https://github.com/deepseek-ai/deepseek-harness | MIT, Copyright (c) 2026 DeepSeek | Public lifecycle, metadata, projection, settings, bundle and slot contracts. Core is unmodified; the native `dsh-system-prompt` peer supplies public prompt rendering, and other npm packages are development test dependencies. No DSH source copied into the production plugin. |
 
 Reviewed commit identifiers and source paths are in [docs/RESEARCH.md](docs/RESEARCH.md).
 

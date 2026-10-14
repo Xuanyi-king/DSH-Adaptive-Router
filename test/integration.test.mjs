@@ -384,8 +384,9 @@ test("successful classification is reused for later steps and first-step retry",
   }
   assert.equal(server.calls, 1);
 });
-test("candidate with smaller context window is excluded rather than shrinking capacity", async (t) => {
-  const { adapter, agent } = await setup(t);
+test("candidate with smaller context window is excluded for oversized system prompt", async (t) => {
+  const { ctx, adapter, agent } = await setup(t);
+  ctx.systemPrompt.section({ name: "large-prompt", order: 0, text: "x".repeat(20000) });
   const resolve = adapter.resolveModel.bind(adapter);
   adapter.resolveModel = async (provider, model) => ({
     ...(await resolve(provider, model)),
@@ -491,12 +492,13 @@ test("native manual choice arriving during final model validation supersedes aut
   await send(agent, "复杂编程");
   assert.equal(adapter.requests[0].model, "balanced");
 });
-test("native manual choice arriving during held model validation supersedes held decision", async (t) => {
+test("native manual choice arriving during invalidated held model validation supersedes held decision", async (t) => {
   const server = await jevServer(t, (res) =>
     res.end(JSON.stringify(verdict())),
   );
   const { ctx, adapter, agent } = await setup(t, classifierConfig(server.url));
   await send(agent, "复杂编程");
+  ctx.emit("llm/adapters-updated");
   const resolve = adapter.resolveModel.bind(adapter);
   let fired = false;
   adapter.resolveModel = async (provider, model) => {
@@ -592,4 +594,102 @@ test("non-reasoning target omits inherited unsupported effort before native disp
   await send(agent, "你好");
   assert.equal(adapter.requests[0].model, "fast");
   assert.equal(adapter.requests[0].reasoningEffort, undefined);
+});
+
+test("small actual prompt can switch from 200K default to 64K fast model", async (t) => {
+  const { adapter, agent } = await setup(t);
+  const resolve = adapter.resolveModel.bind(adapter);
+  adapter.resolveModel = async (provider, model) => ({
+    ...(await resolve(provider, model)),
+    context: { contextWindow: model === "balanced" ? 200000 : 64000 },
+  });
+  await send(agent, "你好");
+  assert.equal(adapter.requests[0].model, "fast");
+});
+
+test("long actual history cannot switch into a smaller context window", async (t) => {
+  const { adapter, agent } = await setup(t);
+  const resolve = adapter.resolveModel.bind(adapter);
+  adapter.resolveModel = async (provider, model) => ({
+    ...(await resolve(provider, model)),
+    context: { contextWindow: model === "balanced" ? 200000 : 64000 },
+  });
+  agent.session.append("user/message", createUserMessage({
+    content: [{ type: "text", text: "历史资料".repeat(25000) }],
+    source: { kind: "user" },
+  }), { surfaceOp: "append" });
+  await send(agent, "你好");
+  assert.equal(adapter.requests[0].model, "balanced");
+});
+
+test("stable held decision skips catalog and capability queries on subsequent requests", async (t) => {
+  const { ctx, adapter, agent } = await setup(t);
+  const list = adapter.listModels.bind(adapter);
+  const resolve = adapter.resolveModel.bind(adapter);
+  let lists = 0, resolutions = 0;
+  adapter.listModels = async provider => { lists++; return list(provider); };
+  adapter.resolveModel = async (provider, model) => { resolutions++; return resolve(provider, model); };
+  await send(agent, "你好");
+  const initial = { lists, resolutions };
+  for (const step of [1, 2, 3]) {
+    const result = await agentEvents(ctx, agent).waterfall("agent/request",
+      { turn: 1, step, signal: new AbortController().signal },
+      () => Promise.resolve({ provider: "p", model: "balanced", reasoningEffort: "medium" }));
+    assert.equal(result.model, "fast");
+  }
+  assert.deepEqual({ lists, resolutions }, initial);
+  agent.session.append("model/selection", { provider: "p", model: "balanced", reasoningEffort: "low" });
+  const manual = await agentEvents(ctx, agent).waterfall("agent/request",
+    { turn: 1, step: 4, signal: new AbortController().signal },
+    () => Promise.resolve({ provider: "p", model: "balanced", reasoningEffort: "low" }));
+  assert.equal(manual.model, "balanced");
+  assert.equal(manual.reasoningEffort, "low");
+  assert.deepEqual({ lists, resolutions }, initial);
+});
+
+test("adapter registry change revalidates held target and rejects removed model", async (t) => {
+  const { ctx, adapter, agent } = await setup(t);
+  await send(agent, "你好");
+  adapter.listModels = async provider => [{ provider, id: "balanced", name: "balanced" }];
+  ctx.emit("llm/adapters-updated");
+  const result = await agentEvents(ctx, agent).waterfall("agent/request",
+    { turn: 1, step: 2, signal: new AbortController().signal },
+    () => Promise.resolve({ provider: "p", model: "balanced", reasoningEffort: "medium" }));
+  assert.equal(result.model, "balanced");
+});
+
+test("late prepend context injection is included before allowing a smaller window", async (t) => {
+  const { ctx, adapter, agent } = await setup(t);
+  const resolve = adapter.resolveModel.bind(adapter);
+  adapter.resolveModel = async (provider, model) => ({
+    ...(await resolve(provider, model)),
+    context: { contextWindow: model === "balanced" ? 200000 : 64000 },
+  });
+  // Same public pattern as DSH session-reference: append after await next().
+  ctx.on("agent/pre-step", async (_payload, next) => {
+    const decision = await next();
+    return { ...decision, messages: [...decision.messages, createUserMessage({
+      content: [{ type: "text", text: "x".repeat(100000) }],
+      source: { kind: "model-selection", form: "notice", summary: "long reference" },
+    })] };
+  }, { prepend: true });
+  await send(agent, "你好");
+  assert.equal(adapter.requests[0].model, "balanced");
+  assert.ok(adapter.requests[0].messages.some(message => message.content.some(
+    block => block.type === "text" && block.text === "x".repeat(100000),
+  )));
+});
+
+test("unknown outer prompt assembly transform conservatively prevents shrinking", async (t) => {
+  const { ctx, adapter, agent } = await setup(t);
+  const resolve = adapter.resolveModel.bind(adapter);
+  adapter.resolveModel = async (provider, model) => ({
+    ...(await resolve(provider, model)),
+    context: { contextWindow: model === "balanced" ? 200000 : 64000 },
+  });
+  ctx.on("system-prompt/assemble", async (_assembly, _context, next) => ({
+    ...await next(), sections: [{ name: "late-large-prompt", text: "x".repeat(100000), interpolate: false }],
+  }), { prepend: true });
+  await send(agent, "你好");
+  assert.equal(adapter.requests[0].model, "balanced");
 });

@@ -6,11 +6,14 @@
 
 MIT; Copyright (c) 2026 半格 / HalfBit.
 
+Source revision: `9b8ac7dd8668b936dbd3cde1c93c12eecbf3fca8`.
+
 - `lib/index.js` → `src/context.js`: extracted message text reading, clipping, fresh turn,
   context initialization, event fold and context envelope. Kept JavaScript. Added actual
   provider/model inheritance and image presence; renamed the projection.
 - `lib/index.js` `deriveLadder` → `src/router.ts`: adapted adapter-ordered effort ladder;
-  deduplicated results and added validated per-tier mappings.
+  deduplicated results and added validated per-tier mappings. S2 restores the original
+  midpoint-first fallback when the named middle effort collides with an endpoint.
 - `lib/index.js` `askJev`, `resolveKey`, `readConfig`, pre-step/request/manual/abort
   mechanisms → `src/classifier.ts`, `src/index.ts`, `src/config.ts`: adapted to a single
   capability-tier/role classifier, registered model pool, four modes and current DSH.
@@ -28,10 +31,12 @@ Compiled copies in `lib/` derive from the same source and have the same attribut
 | Pi Model Router | https://github.com/iariap/pi-model-router | MIT, Copyright (c) 2026 Pablo Iaria | Candidate allowlists, role/model/thinking matching, supported-thinking validation. No Pi runtime or model catalog copied. |
 | LiteLLM | https://github.com/BerriAI/litellm | MIT for reviewed non-enterprise code, Copyright (c) 2023 Berri AI | Complexity tiers, conservative heuristic gating, classification fallback, session continuity. No enterprise code copied. |
 | OpenSquilla | https://github.com/TokenRhythm/opensquilla | Apache-2.0 | Surface-feature gating, history-sensitive routing and joint route/thinking design. No source, weights or runtime copied; no Apache derivative distributed. |
+| Claude Code Templates | https://github.com/davila7/claude-code-templates | MIT, Copyright (c) 2025 Daniel (San) Ávila, for the reviewed routing mod and dashboard | Evaluated the pure Jev routing policy, confidence thresholds and pending-input safeguards. No source or dependency included. |
 | Jevcore | https://github.com/PerryLink/jevcore | Apache-2.0 | Evaluated independent SystemOne/Choice client and resilience costs. Not included as code or dependency; its NOTICE was reviewed. |
 | DeepSeek Harness | https://github.com/deepseek-ai/deepseek-harness | MIT, Copyright (c) 2026 DeepSeek | Public lifecycle, metadata, projection, settings, bundle and slot contracts. Core is unmodified; the native `dsh-system-prompt` peer supplies public prompt rendering, and other npm packages are development test dependencies. No DSH source copied into the production plugin. |
 
 Reviewed commit identifiers and source paths are in [docs/RESEARCH.md](docs/RESEARCH.md).
+The S2 comparison and exact reuse decision are in [docs/S2-UPSTREAM-AUDIT.md](docs/S2-UPSTREAM-AUDIT.md).
 
 ## Runtime npm dependencies
 

@@ -60,6 +60,19 @@ test("complex coding chooses capability and legal effort together", () => {
     { provider: "p", model: "coder", reasoningEffort: "high" },
   );
 });
+test("moderate task uses the advertised midpoint when named medium is the weakest effort", () => {
+  const model = {
+    ...pool[1],
+    efforts: ["medium", "brief", "standard", "high", "max"],
+  };
+  assert.deepEqual(
+    route(
+      { tier: "moderate", role: "coding", relation: "new" },
+      { pool: [model] },
+    ).selection,
+    { provider: "p", model: "balanced", reasoningEffort: "standard" },
+  );
+});
 test("unfinished continuation keeps prior model and depth", () => {
   const previous = {
     provider: "p",

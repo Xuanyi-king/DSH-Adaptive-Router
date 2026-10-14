@@ -20,20 +20,23 @@
 
 ## 安装
 
-仓库提供预构建的 `lib/`，可直接从 GitHub 安装（需要已安装目标版本 DSH 和 pnpm）：
+仓库提供预构建的 `lib/`，可直接从 GitHub 安装（需要已安装目标版本 DSH 和 pnpm）。**S3 可视化配置仍在 [PR #4](https://github.com/Xuanyi-king/DSH-Adaptive-Router/pull/4)，尚未合入 main；以下命令专用于 S3 预览验收**：
 
 ```bash
-dsh plugin --profile web add github:Xuanyi-king/DSH-Adaptive-Router#01788c9b0997ff56f7588ccedeaf31e8dd1d470c
+dsh plugin --profile web add github:Xuanyi-king/DSH-Adaptive-Router#448c3ba461f4e9e6f8f06887b338cc56e6d84fdc
 # 重启 dsh web
 ```
 
-GitHub 示例固定到本轮已验证的修复提交（PR 合并前该提交位于审计分支）；普通 install 可能复用旧 lock commit。升级时从外部终端停止 Host，使用经过核验的新完整 SHA 或已构建 tarball，仅更新此包；保留原 SHA、tgz 和 Profile lock 供回滚。安装后核对 lock 解析 SHA、磁盘 package 版本与原生插件条目的 active 状态，再重启 Host、硬刷新 Web Client。不要删除整个 lockfile 或升级其他插件。
+该完整 SHA 固定到包含 S3 原生模型选择器、快捷菜单及最终两项交互修复的代码快照，**不是正式发布版本**。此前 README 使用的 `01788c9b…` 属于 S3 之前的旧兼容修复版本，不包含本轮 UI。PR #4 合并后，正式安装说明应改为可长期访问的版本 Tag 或合并后的 main 完整 SHA，**不要继续把 PR 分支提交当作长期发布源**。切勿误以为当前的 `main` 已有 S3。
 
-尚未发布 npm 包。也可克隆源码后构建并使用本地 tarball：
+普通安装/升级可能复用旧 lock commit。升级时从外部终端停止 Host，使用明确的完整 SHA 或构建好的 tarball，只更新本插件；保留原 SHA、tgz 和 Profile lock 便于回滚。安装后核对 lock 解析 SHA、磁盘 package 版本与原生插件条目的 active 状态，再重启 Host、硬刷新 Web Client。不要删除整个 lockfile 或顺带升级其他插件。
+
+尚未发布 npm 包。也可克隆源码、**检出同一 S3 预览提交**，再构建本地 tarball，避免默认克隆 main 时误装旧版：
 
 ```bash
 git clone https://github.com/Xuanyi-king/DSH-Adaptive-Router.git
 cd DSH-Adaptive-Router
+git checkout 448c3ba461f4e9e6f8f06887b338cc56e6d84fdc
 npm ci
 npm test
 npm pack

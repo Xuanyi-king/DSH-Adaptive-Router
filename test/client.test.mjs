@@ -16,7 +16,11 @@ const primitives = {
   Input: React.forwardRef((p, ref) => h('input', { ...p, ref })),
   Checkbox: ({label, checked, onChange, disabled}) => h('label', null, h('input', {type:'checkbox', checked, disabled, onChange:e=>onChange(e.target.checked)}),label),
   Switch: ({label, checked, onChange, disabled}) => h('button',{role:'switch','aria-label':label,'aria-checked':checked,disabled,onClick:()=>onChange(!checked)},label),
-  SettingsForm: ({state, labels, onSave, children}) => h('div', null, children, state.failed && h('p',{role:'status'},labels.saveFailed), h('button',{disabled:!state.dirty || state.invalid || state.saving || !state.writable,onClick:onSave},labels.save)),
+  SettingsForm: ({state, labels, onSave, onDiscard, children}) => {
+    const discard = React.useRef(onDiscard); discard.current = onDiscard;
+    React.useEffect(() => () => discard.current(), []);
+    return h('div', null, children, state.failed && h('p',{role:'status'},labels.saveFailed), h('button',{disabled:!state.dirty || state.invalid || state.saving || !state.writable,onClick:onSave},labels.save));
+  },
   Menu: ({open, anchor, items=[], onSelect, children}) => h('div',null,anchor,open && h('div',{role:'menu'}, items.map(i=>i.type==='label'?h('p',{key:i.id},i.text):i.type==='separator'?null:h('button',{key:i.id,disabled:i.disabled,onClick:()=>onSelect(i.id)},i.label)),children)),
 };
 function mount(t) {
@@ -26,8 +30,8 @@ function mount(t) {
   const config = store({status:'ready',writable:true,mode:'host',revision:7,value:{enabled:true,mode:'FULL_AUTO',candidates:[],apiUrl:'',apiKeyEnv:'JEV_API_KEY'}});
   const catalog = {groups:[{id:'p',name:'Native Provider',models:[{id:'fast',name:'Real Fast',reasoning:{efforts:[{id:'off',name:'Off'},{id:'high',name:'High'},{id:'max',name:'Max'}]}}]}],failures:[]};
   const writes=[], entries=[], cleanups=[];
-  let answer=true, failing=false, plugin;
-  const scope={...config,async mutate(ops,revision) { writes.push({ops,revision}); if(!answer) return false; const next={...config.getSnapshot().value}; for(const op of ops) next[op.path[0]]=op.value; config.set({...config.getSnapshot(),value:next,revision:revision+1}); return true; }};
+  let answer=true, failing=false, plugin, writeGate;
+  const scope={...config,async mutate(ops,revision) { writes.push({ops,revision}); if(!(writeGate ? await writeGate : answer)) return false; const next={...config.getSnapshot().value}; for(const op of ops) next[op.path[0]]=op.value; config.set({...config.getSnapshot(),value:next,revision:revision+1}); return true; }};
   const ctx={
     slots:{inject(_key,f){ const off=f(); if(typeof off==='function') cleanups.push(off); },register(options,component){ const entry={options,component}; entries.push(entry); return ()=>entries.splice(entries.indexOf(entry),1); }},
     configForms:{get(){return scope;}}, connection:{}, sessions:{binding(){return {session:{getSnapshot:()=>({running:false})}};}},
@@ -41,7 +45,7 @@ function mount(t) {
   const root=createRoot(document.getElementById('root'));
   t.after(async()=>{await act(async()=>root.unmount()); for(const off of cleanups.reverse()) off(); dom.window.close();});
   const hook=s=>selector=>React.useSyncExternalStore(s.subscribe,()=>selector(s.getSnapshot()));
-  return {entries,config,catalog,writes,setAnswer(v){answer=v;},setCatalogFailure(v){failing=v;},async render(key,extra={}) { const entry=entries.find(e=>e.options.name===key); assert.ok(entry,`missing ${key}`); const injected=entry.options.inject?.('session')??{}; const props={...injected,view:'page',...extra}; for(const [name,source] of Object.entries(injected.hooks??{})) props['use'+name[0].toUpperCase()+name.slice(1)]=hook(source); Object.assign(props,extra); await act(async()=>{root.render(h(entry.component,props));}); },async click(label){const element=[...document.querySelectorAll('button,label')].find(e=>e.textContent===label || e.getAttribute('aria-label')===label); assert.ok(element,label); await act(async()=>element.click());}};
+  return {entries,config,catalog,writes,setAnswer(v){answer=v;},setWriteGate(v){writeGate=v;},setCatalogFailure(v){failing=v;},async render(key,extra={}) { const entry=entries.find(e=>e.options.name===key); assert.ok(entry,`missing ${key}`); const injected=entry.options.inject?.('session')??{}; const props={...injected,view:'page',...extra}; for(const [name,source] of Object.entries(injected.hooks??{})) props['use'+name[0].toUpperCase()+name.slice(1)]=hook(source); Object.assign(props,extra); await act(async()=>{root.render(h(entry.component,props));}); },async click(label){const element=[...document.querySelectorAll('button,label')].find(e=>e.textContent===label || e.getAttribute('aria-label')===label); assert.ok(element,label); await act(async()=>element.click());}};
 }
 test('native configuration picker authorizes models and saves through revision-fenced form',async t=>{
   const ui=mount(t); await ui.render('plugins.bundle.config');
@@ -134,4 +138,40 @@ test('uncommitted route proposal is not mislabeled as an executed native overrid
   await ui.click('智能路由快捷菜单');
   assert.doesNotMatch(document.body.textContent,/Native override/);
   assert.match(document.body.textContent,/等待原生请求/);
+});
+
+test('quick mode writes are synchronously exclusive and unlock after refusal and success',async t=>{
+  const ui=mount(t); let release;
+  ui.setWriteGate(new Promise(resolve=>{release=resolve;}));
+  await ui.render('conversation.input.right',{sessionId:'session',useProjection:()=>({tick:1,actual:null}),useSession:selector=>selector({running:false}),useAdaptiveConnection:()=>null});
+  await ui.click('智能路由快捷菜单');
+  const manual=[...document.querySelectorAll('button')].find(e=>e.textContent==='手动模式');
+  const effort=[...document.querySelectorAll('button')].find(e=>e.textContent==='仅自动思考档位');
+  await act(async()=>{manual.click(); effort.click();});
+  assert.equal(ui.writes.length,1,'same-tick clicks must submit only one native mutation');
+  assert.equal(ui.writes[0].revision,7);
+  await act(async()=>release(false));
+  assert.match(document.body.textContent,/模式未保存/);
+  ui.setWriteGate(null);
+  await ui.click('手动模式');
+  assert.equal(ui.writes.length,2);
+  assert.equal(ui.config.getSnapshot().value.mode,'MANUAL');
+  assert.equal(ui.writes[1].revision,7,'rejected write must not bypass native revision fencing');
+  await ui.click('智能路由快捷菜单'); await ui.click('完全自动');
+  assert.equal(ui.writes.length,3);
+  assert.equal(ui.writes[2].revision,8,'next write uses the native updated revision');
+});
+test('native SettingsForm disposal clears retained drafts and captures a new baseline on re-entry',async t=>{
+  const ui=mount(t); await ui.render('plugins.bundle.config'); await ui.click('Real Fast');
+  ui.setAnswer(false); await ui.click('保存');
+  assert.match(document.body.textContent,/保存失败/);
+  await ui.render('plugins.bundle.config',{view:'summary'}); // Native frame leaves while its owner is retained.
+  await act(async()=>ui.config.set({...ui.config.getSnapshot(),revision:9}));
+  await ui.render('plugins.bundle.config');
+  const checkbox=[...document.querySelectorAll('label')].find(e=>e.textContent==='Real Fast').querySelector('input');
+  assert.equal(checkbox.checked,false,'discarded authorization must not remain in the draft');
+  assert.doesNotMatch(document.body.textContent,/保存失败/);
+  assert.equal([...document.querySelectorAll('button')].find(e=>e.textContent==='保存').disabled,true);
+  ui.setAnswer(true); await ui.click('Real Fast'); await ui.click('保存');
+  assert.equal(ui.writes[1].revision,9,'discard must clear the stale baseline revision');
 });

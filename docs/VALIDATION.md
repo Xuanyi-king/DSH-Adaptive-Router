@@ -143,3 +143,11 @@ Playwright/Chromium 同样安装于临时目录，不进入项目依赖或发布
 浏览器依赖与 adapter fixture 只用于验证，不向用户暴露测试模型或添加第二套目录。
 未执行真实付费 Provider/Jev 在线请求、远端只读部署端到端、跨提供商质量评测；目录异常与只读由上述 DOM 回归覆盖。
 源算法和 PR #3 生命周期未改；没有 Release、npm 发布或合并 main。
+
+### PR #4 收尾：快捷互斥与原生表单丢弃
+
+增加两项回归，修复前分别复现「同批点击提交两次」与「原生 SettingsForm 卸载后旧草稿仍保留」。
+快捷写入使用同步 ref 互斥，拒绝/成功后均释放，仍使用 ConfigForms 原生修订号；onDiscard 接入现有 discard，清理草稿、基线和失败提示。
+修复后 `npm test` **54/54 通过，0 失败、0 跳过**，原有 52 项全部保留。
+`npm run build`、`npm pack`、`node --check lib/client.js` 和 `git diff --check` 通过，lib/client.js 与源文件同步。
+没有修改路由算法、配置结构、依赖或安装/卸载逻辑。本补丁未重新执行完整浏览器流程；上述 S3 完整 Web 验证属于收尾前的记录。

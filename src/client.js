@@ -64,7 +64,7 @@ window.__ModuleLoader__.load({
       if (props.view === "summary") return h("span", null, modes[value.mode] ?? value.mode, " · ", enabledRows.length, " 个候选");
       return h(SettingsForm, { labels,
         state: { available: snapshot.status === "ready", writable: snapshot.writable, dirty: !!draft, invalid: !!invalid || !snapshot.writable, saving, failed },
-        onSave: save, onDiscard: () => {} },
+        onSave: save, onDiscard: discard },
         h("section", { style: sectionStyle },
           h("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, h(Switch, { label: "启用智能路由", checked: !!value.enabled, disabled, onChange: next => edit("enabled", next) }), "启用智能路由"),
           select("路由模式（插件级，适用于所有会话）", value.mode, Object.entries(modes), next => edit("mode", next), disabled),
@@ -131,6 +131,7 @@ window.__ModuleLoader__.load({
       const running = props.useSession(s => s.running);
       const [status, setStatus] = React.useState(null);
       const [open, setOpen] = React.useState(false);
+      const writing = React.useRef(false);
       const [saving, setSaving] = React.useState(false);
       const [failed, setFailed] = React.useState(false);
       React.useEffect(() => {
@@ -150,11 +151,11 @@ window.__ModuleLoader__.load({
       const currentMode = settings.value.mode;
       const choose = async id => {
         if (id === "config") { props.openConfig(); setOpen(false); return; }
-        if (running || saving || !settings.writable) return;
-        setSaving(true); setFailed(false);
+        if (running || writing.current || !settings.writable) return;
+        writing.current = true; setSaving(true); setFailed(false);
         try { if (!await props.changeMode(id)) setFailed(true); else setOpen(false); }
         catch { setFailed(true); }
-        finally { setSaving(false); }
+        finally { writing.current = false; setSaving(false); }
       };
       return h(Menu, { open, portal: true, autoFocus: true, side: "top", align: "end", compact: true, onClose: () => setOpen(false), onSelect: choose, selectedId: currentMode,
         anchor: h(Button, { size: "sm", variant: "toolbar", "aria-label": "智能路由快捷菜单", "aria-haspopup": "menu", "aria-expanded": open, title: `${control} · ${name} · ${effort}\n${reason}`, style: { maxWidth: "min(180px, 28vw)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }, onClick: () => setOpen(old => !old) }, h("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" } }, `${control} · ${name}${actual ? " · " + effort : ""}`)),

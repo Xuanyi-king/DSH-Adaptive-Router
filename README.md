@@ -20,23 +20,23 @@
 
 ## 安装
 
-仓库提供预构建的 `lib/`，可直接从 GitHub 安装（需要已安装目标版本 DSH 和 pnpm）。**S3 原生可视化配置已通过 [PR #4](https://github.com/Xuanyi-king/DSH-Adaptive-Router/pull/4) 合入 main；尚未发布 npm 或正式稳定版**。下面固定到本次 S3 合并提交，避免 `main` 后续变化影响安装：
+仓库提供预构建的 `lib/`，可直接从 GitHub 安装（需要已安装目标版本 DSH 和 pnpm）。**S4.1 路由可靠性与 NeoHorse-Jev 接入已通过 [PR #6](https://github.com/Xuanyi-king/DSH-Adaptive-Router/pull/6) 合入 main；尚未发布 npm 或正式稳定版**。下面固定到本次 S4.1 合并提交，避免 `main` 后续变化影响安装：
 
 ```bash
-dsh plugin --profile web add github:Xuanyi-king/DSH-Adaptive-Router#02bd30b01cc24a5a96e869f6aef61a106de14828
+dsh plugin --profile web add github:Xuanyi-king/DSH-Adaptive-Router#7d5e2b27accc3565e4aff7946560c1f6b33c1763
 # 重启 dsh web，并硬刷新浏览器
 ```
 
-此 SHA 包含 S3 模型目录勾选、能力/档位配置、聊天快捷菜单及两项收尾修复。目标环境为 DSH `0.2.1-alpha.2`、Node.js ≥22；离线模型与浏览器验收记录见 [VALIDATION.md](docs/VALIDATION.md)，**真实 Jev / 付费模型仍需实机验证**。它是固定的已合并源码快照，不表示发布了稳定版 Tag。后续发布正式版本时应改用可追溯的版本 Tag。
+此 SHA 包含 S3 的模型选择和原生配置，以及 S4.1 的模式就绪提示、真实 Bypass/Fallback 区分、NeoHorse-Jev 预设、分类协议保护和有限诊断记录。目标环境为 DSH `0.2.1-alpha.2`、Node.js ≥22；离线模型与浏览器验收记录见 [VALIDATION.md](docs/VALIDATION.md) 与 [S4.1 说明](docs/S4.1-RELIABILITY.md)，**真实托管 Jev / NeoHorse 和付费模型仍需实机验证**。它是固定的已合并源码快照，不表示发布了稳定版 Tag。后续发布正式版本时应改用可追溯的版本 Tag。
 
 普通安装/升级可能复用旧 lock commit。升级时先从外部终端停止 Host，再使用明确的完整 SHA 或构建好的 tarball，仅更新本插件；保留旧 SHA、tgz 和 Profile lock 便于回滚。安装后核对 lock 解析 SHA、磁盘 package 版本及原生插件 active 状态，然后重启 Host、硬刷新 Web Client。**不要删除整个 lockfile 或顺带升级其他插件**。
 
-尚未发布 npm 包。也可克隆源码并**检出同一 S3 合并提交**，再构建本地 tarball：
+尚未发布 npm 包。也可克隆源码并**检出同一 S4.1 合并提交**，再构建本地 tarball：
 
 ```bash
 git clone https://github.com/Xuanyi-king/DSH-Adaptive-Router.git
 cd DSH-Adaptive-Router
-git checkout 02bd30b01cc24a5a96e869f6aef61a106de14828
+git checkout 7d5e2b27accc3565e4aff7946560c1f6b33c1763
 npm ci
 npm test
 npm pack
@@ -61,6 +61,15 @@ dsh plugin --profile web remove dsh-plugin-adaptive-router
 ```
 
 停用后插件不改写任何请求。DSH 会继续使用其当前合法原生选择；插件不会偷偷改回旧模型或修改用户选择记录。
+
+### S4.1 首次试用（先低风险验收）
+
+- 使用**正在运行的 Profile**：例如 Windows Desktop 的 `desktop`，不要误装到 `web`。已安装的本地 tgz 不会因 main 合并自动更新；先停止 DSH、备份旧包与 Profile lock，按上述固定 SHA 重新构建/升级**本插件**，重启后核对 active 与实际安装来源。不要删除整个 lockfile。
+- 在 DSH 原生凭据管理中添加分类服务的密钥引用；插件的分类器预设支持原版 Jev、NeoHorse-Jev 托管/本地及自定义 System One。模型权限和 API Key 需要另行获得；不要把密钥填在 URL 中。
+- 先选 `EFFORT_AUTO`，保持 DSH 原生模型。该模式**无需配置候选模型**，但普通任务要依靠 System One 服务分类；当前模型没有可调档位时会保持默认，不算故障。
+- 插件页「测试连接（静态检查）」**不会发送网络请求**。只有之后发起真正的任务并成功完成分类，才会显示相关服务已验证；简单问候可能走本地快速判断，不会证明服务可用。
+- 再按需要选择 `FULL_AUTO` 并明确授权候选模型、设置能力层级与角色。通过聊天菜单核对**已提交的实际 Header**、原生覆盖、Bypass/Fallback 和原因。初次不要用重要工作或长会话验证。
+- 分类请求会向你配置的 System One 服务发送当前用户文本及裁剪后的前文上下文。若使用托管服务，请先确认隐私边界和费用。没有真实 API 权限时可以使用离线测试夹具，不要声称线上路由已验证。
 
 ## 兼容性、升级与卸载（2026-10 生命周期审计）
 

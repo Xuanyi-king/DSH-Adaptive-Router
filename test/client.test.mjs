@@ -23,29 +23,29 @@ const primitives = {
   },
   Menu: ({open, anchor, items=[], onSelect, children}) => h('div',null,anchor,open && h('div',{role:'menu'}, items.map(i=>i.type==='label'?h('p',{key:i.id},i.text):i.type==='separator'?null:h('button',{key:i.id,disabled:i.disabled,onClick:()=>onSelect(i.id)},i.label)),children)),
 };
-function mount(t) {
+function mount(t, setupState = null) {
   const dom = new JSDOM('<!doctype html><body><div id="root"></div></body>', {url:'http://localhost'});
   for (const key of ['window','document','HTMLElement','Event','MouseEvent']) globalThis[key] = dom.window[key];
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const config = store({status:'ready',writable:true,mode:'host',revision:7,value:{enabled:true,mode:'FULL_AUTO',candidates:[],apiUrl:'',apiKeyEnv:'JEV_API_KEY'}});
   const catalog = {groups:[{id:'p',name:'Native Provider',models:[{id:'fast',name:'Real Fast',reasoning:{efforts:[{id:'off',name:'Off'},{id:'high',name:'High'},{id:'max',name:'Max'}]}}]}],failures:[]};
-  const writes=[], entries=[], cleanups=[];
+  const writes=[], entries=[], cleanups=[], setupCalls=[];
   let answer=true, failing=false, plugin, writeGate;
   const scope={...config,async mutate(ops,revision) { writes.push({ops,revision}); if(!(writeGate ? await writeGate : answer)) return false; const next={...config.getSnapshot().value}; for(const op of ops) next[op.path[0]]=op.value; config.set({...config.getSnapshot(),value:next,revision:revision+1}); return true; }};
   const ctx={
     slots:{inject(_key,f){ const off=f(); if(typeof off==='function') cleanups.push(off); },register(options,component){ const entry={options,component}; entries.push(entry); return ()=>entries.splice(entries.indexOf(entry),1); }},
-    configForms:{get(){return scope;}}, connection:{}, sessions:{binding(){return {session:{getSnapshot:()=>({running:false})}};}},
+    configForms:{get(){return scope;}}, connection:{rpc:{async call(base,method,payload){setupCalls.push({base,method,payload});return {ok:!!setupState,value:setupState};}}}, sessions:{binding(){return {session:{getSnapshot:()=>({running:false})}};}},
     remote:{$on(){return ()=>{};},session:{async modelCatalog(){return failing ? {ok:false,error:{code:'unavailable'}} : {ok:true,value:catalog};}}},
     pluginNavigation:{openBundle(){}}, get(key){return this[key];},
     effect(f){const off=f(); for(const item of [off].flat()) if(typeof item==='function') cleanups.push(item);},on(){return ()=>{};},inject(_deps,f){f(ctx);},
   };
   const loader={load(spec){plugin=spec.factory(name=>name==='react'?React:name==='@deepseek-ai/dsh-client-ui-primitives'?primitives:name==='@deepseek-ai/dsh-client-store'?{createSnapshotStore:store}:{});}};
-  vm.runInNewContext(fs.readFileSync('lib/client.js','utf8'),{window:{__ModuleLoader__:loader},console,setTimeout,clearTimeout,AbortController,structuredClone});
+  vm.runInNewContext(fs.readFileSync('lib/client.js','utf8'),{window:{__ModuleLoader__:loader},console,setTimeout,clearTimeout,AbortController,structuredClone,URL:dom.window.URL});
   plugin.apply(ctx);
   const root=createRoot(document.getElementById('root'));
   t.after(async()=>{await act(async()=>root.unmount()); for(const off of cleanups.reverse()) off(); dom.window.close();});
   const hook=s=>selector=>React.useSyncExternalStore(s.subscribe,()=>selector(s.getSnapshot()));
-  return {entries,config,catalog,writes,setAnswer(v){answer=v;},setWriteGate(v){writeGate=v;},setCatalogFailure(v){failing=v;},async render(key,extra={}) { const entry=entries.find(e=>e.options.name===key); assert.ok(entry,`missing ${key}`); const injected=entry.options.inject?.('session')??{}; const props={...injected,view:'page',...extra}; for(const [name,source] of Object.entries(injected.hooks??{})) props['use'+name[0].toUpperCase()+name.slice(1)]=hook(source); Object.assign(props,extra); await act(async()=>{root.render(h(entry.component,props));}); },async click(label){const element=[...document.querySelectorAll('button,label')].find(e=>e.textContent===label || e.getAttribute('aria-label')===label); assert.ok(element,label); await act(async()=>element.click());}};
+  return {entries,config,catalog,writes,setupCalls,setAnswer(v){answer=v;},setWriteGate(v){writeGate=v;},setCatalogFailure(v){failing=v;},async render(key,extra={}) { const entry=entries.find(e=>e.options.name===key); assert.ok(entry,`missing ${key}`); const injected=entry.options.inject?.('session')??{}; const props={...injected,view:'page',...extra}; for(const [name,source] of Object.entries(injected.hooks??{})) props['use'+name[0].toUpperCase()+name.slice(1)]=hook(source); Object.assign(props,extra); await act(async()=>{root.render(h(entry.component,props));}); },async click(label){const element=[...document.querySelectorAll('button,label')].find(e=>e.textContent===label || e.getAttribute('aria-label')===label); assert.ok(element,label); await act(async()=>element.click());}};
 }
 test('native configuration picker authorizes models and saves through revision-fenced form',async t=>{
   const ui=mount(t); await ui.render('plugins.bundle.config');
@@ -93,9 +93,10 @@ test('chip displays committed native override and blocks mode switching during e
     sessionId:'session',useProjection:()=>({tick:1,actual:{provider:'p',model:'balanced',reasoningEffort:'high'}}),
     useSession:selector=>selector({running:true}),useAdaptiveConnection:selector=>selector(connection.getSnapshot()),
   });
-  assert.match(document.querySelector('button').textContent,/Native · balanced · high/);
+  assert.match(document.querySelector('button').textContent,/原生 · balanced/);
   await ui.click('智能路由快捷菜单');
   assert.match(document.body.textContent,/Native override/);
+  assert.match(document.body.textContent,/high/); // Full effort stays in the native menu.
   assert.equal([...document.querySelectorAll('button')].find(e=>e.textContent==='手动模式').disabled,true);
   assert.equal(ui.writes.length,0);
 });
@@ -174,4 +175,43 @@ test('native SettingsForm disposal clears retained drafts and captures a new bas
   assert.equal([...document.querySelectorAll('button')].find(e=>e.textContent==='保存').disabled,true);
   ui.setAnswer(true); await ui.click('Real Fast'); await ui.click('保存');
   assert.equal(ui.writes[1].revision,9,'discard must clear the stale baseline revision');
+});
+
+test('manual settings explicitly need no Jev and effort-only settings do not require candidates',async t=>{
+  const ui=mount(t);ui.config.set({...ui.config.getSnapshot(),value:{...ui.config.getSnapshot().value,mode:'MANUAL'}});
+  await ui.render('plugins.bundle.config');
+  assert.match(document.body.textContent,/手动模式.*不需要分类服务/);
+  await act(async()=>ui.config.set({...ui.config.getSnapshot(),value:{...ui.config.getSnapshot().value,mode:'EFFORT_AUTO'}}));
+  assert.match(document.body.textContent,/尚未设置分类服务地址/);
+  assert.doesNotMatch(document.querySelector('[aria-label="路由就绪状态"]').textContent,/候选/);
+});
+test('NeoHorse preset stages an explicit config patch and keeps custom credentials until native save',async t=>{
+  const ui=mount(t);ui.config.set({...ui.config.getSnapshot(),value:{...ui.config.getSnapshot().value,apiKeyEnv:'MY_CUSTOM_KEY',confidenceThreshold:.72}});
+  await ui.render('plugins.bundle.config');
+  const preset=document.querySelector('select[aria-label="分类服务预设"]');assert.ok(preset);
+  await act(async()=>{preset.value='neohorse-hosted';preset.dispatchEvent(new Event('change',{bubbles:true}));});
+  await ui.click('应用预设到草稿');assert.equal(ui.writes.length,0);
+  await ui.click('保存');
+  assert.equal(ui.config.getSnapshot().value.apiUrl,'https://tokenrhythm.studio/v1/systemone');
+  assert.equal(ui.config.getSnapshot().value.apiKeyEnv,'MY_CUSTOM_KEY');
+  assert.equal(ui.config.getSnapshot().value.confidenceThreshold,.72);
+});
+test('connection check stays explicit about static-only validation and sends no chat or URL arguments',async t=>{
+  const ui=mount(t);await ui.render('plugins.bundle.config');
+  await ui.click('测试连接（静态检查）');
+  assert.match(document.body.textContent,/未进行网络验证|未发起网络测试/);
+  assert.ok(ui.setupCalls.length > 0);
+  assert.ok(ui.setupCalls.every(call=>Object.keys(call.payload.args).length===0));
+});
+
+test('staged endpoint does not inherit degraded health from the saved endpoint',async t=>{
+  const ui=mount(t,{keyAvailable:true,verified:false,verification:{ok:false,failure:'timeout'},networkTestAvailable:false});
+  ui.config.set({...ui.config.getSnapshot(),value:{...ui.config.getSnapshot().value,apiUrl:'https://old.example/systemone',candidates:[{provider:'p',model:'fast',enabled:true,tier:'simple',roles:['general'],effortByTier:{}}]}});
+  await ui.render('plugins.bundle.config');
+  assert.match(document.querySelector('[aria-label="路由就绪状态"]').textContent,/Degraded/);
+  const preset=document.querySelector('select[aria-label="分类服务预设"]');
+  await act(async()=>{preset.value='neohorse-hosted';preset.dispatchEvent(new Event('change',{bubbles:true}));});
+  await ui.click('应用预设到草稿');
+  assert.doesNotMatch(document.querySelector('[aria-label="路由就绪状态"]').textContent,/Degraded|超时/);
+  assert.match(document.querySelector('[aria-label="路由就绪状态"]').textContent,/Unverified/);
 });

@@ -85,6 +85,18 @@ dsh plugin --profile web remove dsh-plugin-adaptive-router
 候选取消勾选会停用而保留能力配置；「移除这项配置」才删除它。若模型已不再声明档位，旧映射不会自动丢弃，可显式清除恢复模型默认。
 输入框标签点击后显示当前模式、真实 Provider/Model/Effort 和最近原因。快捷模式是**所有会话共享的插件级配置**，不是 Session 私有模式；当前会话执行中或只读时禁止快捷修改，其他会话仍遵守原有配置修订与手动优先约束。原生模型选择器保持独立且优先。
 
+### S4.1 就绪与分类服务（源码开发分支）
+
+配置顶部区分 Needs Setup、Unverified、Ready、Degraded、Manual 等状态；手动模式无需 Jev，EFFORT_AUTO 无需候选池。设置页没有绑定 Session 时，会明确提示在聊天菜单核对当前原生模型。
+
+Jev 连接可选择原版 Jev、NeoHorse 托管、本地或自定义 System One。预设需显式应用到草稿再保存，保留自定义凭据引用和阈值；原版 URL 不自动重置。NeoHorse 托管预设为 `https://tokenrhythm.studio/v1/systemone` / `NeoHorse-Jev-4B`，默认引用 `TOKENRHYTHM_API_KEY`。本地示例 `127.0.0.1:8080` 指 **DSH Host** 所在环境，不会自动启动模型。
+
+“测试连接（静态检查）”只检查已保存 URL/凭据，不发网络探针；目标 DSH 尚无确认可安全复用的探针权限契约。只有相同配置真实分类成功后才标记 Ready，并展示验证时间。这不代表分类准确率或最终模型成功；NeoHorse confidence 不是正确率，也不与 Jev 直接比较。
+
+聊天标签仅显示简短控制状态和实际模型；点击原生菜单看完整档位、来源、原因与建议。`Bypass` 表示自动决定未应用、保留原请求；`Fallback` 仅表示确认应用了配置的备用模型。历史只保留每会话最近 20 Turn 的内存元数据，Web 只展示最近决定，不存聊天或密钥。
+
+上述功能需本轮分支构建，页首固定 S3 安装 SHA 不含 S4.1；详见 [可靠性说明](docs/S4.1-RELIABILITY.md)。
+
 仍可选用 YAML 配置。也可在
 `$DSH_HOME/profiles/web/cordis.patch.yml` 中加入以下标准配置覆盖层。
 下面的 provider/model 是占位符，必须替换为 DSH 原生模型选择器中的真实注册 ID。

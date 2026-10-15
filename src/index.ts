@@ -5,6 +5,7 @@ import type {} from "@deepseek-ai/dsh-session-projection";
 import { renderPrompt, renderContextSnapshot, type PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
 import { z } from "zod";
 import { Config, readConfig, type ConfigValues } from "./config.js";
+import { engineFor, validEndpoint } from "./diagnostics.js";
 import { askJev, localSimple } from "./classifier.js";
 import {
   chooseRoute,
@@ -52,6 +53,16 @@ interface RecordState {
   registryRevision?: number;
   modelInfo?: LlmResolvedModelInfo;
   capacityBlocked?: string;
+  mode?: ConfigValues['mode'];
+  source?: string;
+  tier?: string;
+  role?: string;
+  confidence?: number;
+  elapsedMs?: number;
+  at?: number;
+  actual?: Selection | null;
+  fallbackApplied?: boolean;
+  committed?: boolean;
 }
 class ContextCapacityError extends Error {}
 const isSubagent = (agent: Agent) => agent.session.header.origin === "subagent";
@@ -102,6 +113,7 @@ async function withinBudget<T>(
   }
 }
 export function apply(ctx: Context, config: object) {
+  let disposed = false;
   const held = new WeakMap<Agent, RecordState>();
   const pending = new WeakMap<
     Agent,
@@ -110,6 +122,24 @@ export function apply(ctx: Context, config: object) {
       assembly?: PromptAssembly; promptBytes?: number; batchRevision?: number; assemblyRevision?: number }
   >();
   const records = new Map<string, RecordState>();
+  type Trace = ReturnType<typeof publicRecord>;
+  const history = new Map<string, Trace[]>();
+  let verification: { configKey: string; at: number; elapsedMs: number; ok: boolean; failure?: string } | undefined;
+  let credentialRevision = 0;
+  const credentialsChanged = () => { credentialRevision++; verification = undefined; };
+  // Optional credentials service events, declared in dsh-credentials/src/types.ts.
+  const onCredentialChange = ctx.on.bind(ctx) as (event: string, listener: () => void) => unknown;
+  onCredentialChange("credentials/record-updated", credentialsChanged);
+  onCredentialChange("credentials/reference-updated", credentialsChanged);
+  function publicRecord(record: RecordState) {
+    const overridden = record.committed && record.selection && record.actual
+      && (!sameModel(record.selection, record.actual) || record.selection.reasoningEffort !== record.actual.reasoningEffort)
+      && !["Blocked", "Conflict"].includes(record.control);
+    return { turn: record.turn, at: record.at, mode: record.mode, source: record.source,
+      tier: record.tier, role: record.role, confidence: record.confidence, elapsedMs: record.elapsedMs,
+      selection: record.selection, actual: record.actual ?? null, reason: overridden ? "native-override" : record.reason,
+      control: overridden ? "Native" : record.control, fallbackApplied: record.fallbackApplied ?? false };
+  }
   const settings = () => readConfig(config);
   let registryRevision = 0;
   let prependRevision = 0, captureRevision = -1;
@@ -187,6 +217,7 @@ export function apply(ctx: Context, config: object) {
       | undefined;
   }
   function canApply(agent: Agent, snapshot: ConfigValues, signal: AbortSignal, revision = registryRevision) {
+    if (disposed) return false;
     const live = settings();
     return (
       !signal.aborted &&
@@ -207,9 +238,31 @@ export function apply(ctx: Context, config: object) {
     );
   }
   function save(agent: Agent, record: RecordState) {
+    if (disposed) return;
+    const id = String(agent.session.id);
+    const previous = records.get(id);
+    record = { at: previous?.turn === record.turn ? previous.at : Date.now(), mode: settings().mode,
+      committed: previous?.turn === record.turn ? previous.committed : false,
+      ...record, actual: record.actual ?? ctx.sessionProjections.stateOf(agent.session, "adaptiveRouter")?.actual ?? null };
     held.set(agent, record);
-    records.set(String(agent.session.id), record);
+    records.set(id, record);
+    const entries = history.get(id) ?? [];
+    if (entries.at(-1)?.turn === record.turn) entries[entries.length - 1] = publicRecord(record);
+    else entries.push(publicRecord(record));
+    history.set(id, entries.slice(-20));
   }
+  ctx.on("session/event", (session, event) => {
+    if (event.type !== "request/header" || session.header.origin === "subagent") return;
+    const id = String(session.id), record = records.get(id);
+    if (!record) return;
+    record.actual = selectionOf(event.data.header.config);
+    record.committed = true;
+    const matches = record.selection && sameModel(record.selection, record.actual)
+      && record.selection.reasoningEffort === record.actual.reasoningEffort;
+    record.fallbackApplied = record.control === "Fallback" && !!matches;
+    const entries = history.get(id);
+    if (entries?.length) entries[entries.length - 1] = publicRecord(record);
+  });
   ctx.sessionProjections.register({
     key: "adaptiveRouterContext",
     stateVersion: 1,
@@ -381,8 +434,9 @@ export function apply(ctx: Context, config: object) {
       const { agent, turn, step, signal } = payload;
       if (isSubagent(agent)) return original;
       const current = selectionOf(original);
-      const pass = (reason: string, control = "Fallback") => {
-        save(agent, { turn, selection: null, reason, control });
+      let diagnostic: Partial<RecordState> = { mode: settings().mode };
+      const pass = (reason: string, control = "Bypass") => {
+        save(agent, { ...diagnostic, turn, selection: null, reason, control });
         return original;
       };
       try {
@@ -392,7 +446,7 @@ export function apply(ctx: Context, config: object) {
           return pass("manual", "Manual");
         if (conflict())
           return pass(
-            "conflict: disable Jev Effort Selector or Adaptive Router",
+            "conflict",
             "Conflict",
           );
         // Missing manual-intent seam: conservatively pass through instead of guessing.
@@ -448,6 +502,7 @@ export function apply(ctx: Context, config: object) {
           signal,
         );
         const local = localSimple(text.text, previous, text.material);
+        const started = Date.now(), classifiedCredentialRevision = credentialRevision;
         const decision =
           local ??
           (await askJev(
@@ -465,6 +520,12 @@ export function apply(ctx: Context, config: object) {
             previous !== null,
             signal,
           ));
+        const elapsedMs = Date.now() - started;
+        diagnostic = { mode: s.mode, source: local ? "Local" : engineFor(s), elapsedMs,
+          ...("failure" in decision ? {} : { tier: decision.tier, role: decision.role, confidence: "confidenceKnown" in decision && decision.confidenceKnown === false ? undefined : decision.confidence }) };
+        if (!disposed && !local && classifiedCredentialRevision === credentialRevision && JSON.stringify(settings()) === JSON.stringify(s) && !signal.aborted)
+          verification = { configKey: JSON.stringify(s), at: Date.now(), elapsedMs, ok: !("failure" in decision),
+            ...("failure" in decision ? { failure: decision.failure } : {}) };
         // Settings/manual picks can change while the classifier is awaiting I/O.
         if (!canApply(agent, s, signal, inspectedRevision))
           return pass("decision-superseded", "Native");
@@ -494,7 +555,7 @@ export function apply(ctx: Context, config: object) {
                   ...(effort === undefined ? {} : { reasoningEffort: effort }),
                 };
                 save(agent, {
-                  turn,
+                  ...diagnostic, turn,
                   selection: selected,
                   reason: decision.failure,
                   control: "Fallback",
@@ -541,15 +602,15 @@ export function apply(ctx: Context, config: object) {
         if (!fitsContext(agent, original, info, currentInfo, signal)) return pass("context-too-large");
         if (!canApply(agent, s, signal, inspectedRevision))
           return pass("decision-superseded", "Native");
-        const control = s.mode === "FULL_AUTO" ? "Auto" : s.mode;
+        const control = result.reason === "no-compatible-model" ? "Bypass" : result.reason === "manual" ? "Manual" : "Auto";
         save(agent, {
-          turn,
+          ...diagnostic, turn,
           selection: selected,
           reason:
             result.reason === "auto"
               ? local
                 ? "local"
-                : "jev"
+                : engineFor(s) === "NeoHorse" ? "neohorse" : "jev"
               : result.reason,
           control,
           configKey: JSON.stringify(s),
@@ -567,13 +628,26 @@ export function apply(ctx: Context, config: object) {
     { prepend: true },
   );
   class RouterRemote {
+    // Host-only: not included in the Remote descriptor below.
+    getRecentDecisions(sessionId: string) { return structuredClone(history.get(String(sessionId)) ?? []); }
+    async getSetupState() {
+      const started = Date.now(), s = settings(), inspectedCredentialRevision = credentialRevision;
+      let keyAvailable = false;
+      try { keyAvailable = !!await withinBudget(keyFor(s), Math.min(s.timeoutMs, 5000), new AbortController().signal); } catch { /* Unknown key stays unavailable. */ }
+      const current = inspectedCredentialRevision === credentialRevision && JSON.stringify(settings()) === JSON.stringify(s);
+      const checked = current && verification?.configKey === JSON.stringify(s) ? verification : undefined;
+      return { keyAvailable: current ? keyAvailable : undefined, conflict: conflict(), engine: engineFor(s),
+        verified: checked?.ok ?? false, verification: checked ? { at: checked.at, elapsedMs: checked.elapsedMs, ok: checked.ok, failure: checked.failure } : null,
+        networkTestAvailable: false, networkTestReason: "静态检查已完成，未进行网络验证。当前版本不开放带凭据的远程网络探针；真实分类成功后才验证连接。",
+        checkedAt: Date.now(), inspectionMs: Date.now() - started,
+        endpointValid: validEndpoint(s.apiUrl), model: s.classifierModel };
+    }
     getSessionState(sessionId: string) {
       const record = records.get(String(sessionId));
       return {
         enabled: settings().enabled,
         conflict: conflict(),
-        decision: record ? { turn: record.turn, selection: record.selection,
-          reason: record.reason, control: record.control } : null,
+        decision: record ? publicRecord(record) : null,
       };
     }
   }
@@ -585,6 +659,7 @@ export function apply(ctx: Context, config: object) {
         version: 1,
         methods: [
           { method: "getSessionState", invocation: { kind: "direct" } },
+          { method: "getSetupState", invocation: { kind: "direct" } },
         ],
       },
     },
@@ -602,6 +677,8 @@ export function apply(ctx: Context, config: object) {
     held.delete(agent);
     pending.delete(agent);
     records.delete(String(agent.session.id));
+    history.delete(String(agent.session.id));
   });
-  ctx.effect(() => () => records.clear());
+  ctx.on("session/disposed", session => { records.delete(String(session.id)); history.delete(String(session.id)); });
+  ctx.effect(() => () => { disposed = true; records.clear(); history.clear(); verification = undefined; });
 }

@@ -824,3 +824,85 @@ test('late native-style prompt assembly remains measurable across small tool ste
   assert.equal(adapter.requests.length, 2, 'a small native tool result must not cause a capacity stop');
   assert.equal(agent.session.snapshotEvents().findLast(event => event.type === 'turn/end').data.reason.kind, 'completed');
 });
+
+test('classifier bypass retains native header and is never reported as applied fallback',async t=>{
+  const {ctx,agent,adapter}=await setup(t);
+  await send(agent,'复杂编程任务，不是问候');
+  const state=ctx.get('adaptiveRouter').getSessionState(String(agent.session.id));
+  assert.equal(state.decision.control,'Bypass');
+  assert.equal(state.decision.reason,'no-url');
+  assert.equal(state.decision.actual.model,'balanced');
+  assert.equal(state.decision.fallbackApplied,false);
+  assert.equal(adapter.requests[0].model,'balanced');
+});
+test('true fallback is recorded only after the authorized replacement reaches native Header',async t=>{
+  const {ctx,agent,adapter}=await setup(t,{fallback:'p/coder'});
+  adapter.listModels=async provider=>[{provider,id:'coder',name:'coder'}];
+  await send(agent,'复杂请求');
+  const state=ctx.get('adaptiveRouter').getSessionState(String(agent.session.id));
+  assert.equal(state.decision.control,'Fallback');
+  assert.equal(state.decision.actual.model,'coder');
+  assert.equal(state.decision.fallbackApplied,true);
+});
+test('structured in-memory decisions are bounded, session-isolated, private and disposed',async t=>{
+  const {ctx,agent,fiber}=await setup(t);
+  for(let i=0;i<22;i++)await send(agent,'你好');
+  const service=ctx.get('adaptiveRouter');
+  const history=service.getRecentDecisions(String(agent.session.id));
+  assert.equal(history.length,20);
+  assert.equal(history.at(-1).source,'Local');
+  assert.equal(history.at(-1).actual.model,'fast');
+  assert.deepEqual(service.getRecentDecisions('other'),[]);
+  assert.doesNotMatch(JSON.stringify(history),/你好|configKey|Authorization|messages|prompt|JEV_API_KEY/);
+  const methods=Object.getPrototypeOf(service)['@deepseek-ai/dsh-typert-protocol/remote-methods'].methods;
+  assert.equal(methods.some(m=>m.method==='getRecentDecisions'),false,'no arbitrary-session history Remote');
+  await fiber.dispose();assert.deepEqual(service.getRecentDecisions(String(agent.session.id)),[]);
+});
+
+test('setup inspection is static, credential-safe and runtime verification follows saved configuration',async t=>{
+  const server=await jevServer(t,res=>res.end(JSON.stringify(verdict())));
+  const {ctx,agent}=await setup(t,classifierConfig(server.url));
+  const service=ctx.get('adaptiveRouter');
+  let setupState=await service.getSetupState();
+  assert.equal(setupState.keyAvailable,true);assert.equal(setupState.verified,false);
+  assert.equal(setupState.networkTestAvailable,false);assert.equal(server.calls,0);
+  await send(agent,'复杂编程');setupState=await service.getSetupState();
+  assert.equal(setupState.verified,true);assert.ok(setupState.verification.at>0);
+  assert.equal(server.calls,1,'inspection must not issue a synthetic or additional classifier request');
+  assert.doesNotMatch(JSON.stringify(setupState),/offline-test-token|复杂编程|authorization/i);
+  ctx.get('adaptiveRouter').getSessionState(String(agent.session.id));
+  await ctx.serial("agent/disposed", { agent }); // Exercise the public disposal notification contract.
+  assert.deepEqual(service.getRecentDecisions(String(agent.session.id)),[]);
+});
+
+test('credential changes during classification cannot mark the new credentials verified',async t=>{
+  let release, arrived;
+  const waiting=new Promise(resolve=>{arrived=resolve;});
+  const server=await jevServer(t,res=>{release=()=>res.end(JSON.stringify(verdict()));arrived();});
+  const {ctx,agent}=await setup(t,classifierConfig(server.url));
+  const running=send(agent,'设计一个复杂架构');await waiting;
+  ctx.emit('credentials/reference-updated','DSH_ROUTER_TEST_KEY');release();await running;
+  assert.equal((await ctx.get('adaptiveRouter').getSetupState()).verified,false);
+});
+
+test('unloading during classification leaves native request and cannot repopulate diagnostics',{timeout:5000},async t=>{
+  let release, arrived;const waiting=new Promise(resolve=>{arrived=resolve;});
+  const server=await jevServer(t,res=>{release=()=>res.end(JSON.stringify(verdict()));arrived();});
+  const {ctx,agent,adapter,fiber}=await setup(t,classifierConfig(server.url));
+  const service=ctx.get('adaptiveRouter');const running=send(agent,'复杂编程');await waiting;
+  const disposing=fiber.dispose();release();await disposing;await running;
+  assert.equal(adapter.requests[0].model,'balanced');
+  assert.equal(service.getSessionState(String(agent.session.id)).decision,null);
+  assert.deepEqual(service.getRecentDecisions(String(agent.session.id)),[]);
+});
+
+test('a final request override records the proposal separately from the committed native Header',async t=>{
+  const {ctx,agent}=await setup(t);
+  ctx.on('agent/request',async (_payload,next)=>({ ...await next(), provider:'p', model:'balanced', reasoningEffort:'high' }),{prepend:true});
+  await send(agent,'你好');
+  const state=ctx.get('adaptiveRouter').getSessionState(String(agent.session.id));
+  assert.equal(state.decision.selection.model,'fast');
+  assert.equal(state.decision.actual.model,'balanced');
+  assert.equal(state.decision.control,'Native');
+  assert.equal(state.decision.fallbackApplied,false);
+});

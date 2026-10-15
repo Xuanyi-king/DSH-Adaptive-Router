@@ -62,6 +62,16 @@ dsh plugin --profile web remove dsh-plugin-adaptive-router
 
 停用后插件不改写任何请求。DSH 会继续使用其当前合法原生选择；插件不会偷偷改回旧模型或修改用户选择记录。
 
+## 兼容性、升级与卸载（2026-10 生命周期审计）
+
+- **实测范围**：Linux / Node.js 24 / DSH **`0.2.1-alpha.2`**；隔离 tgz 安装、冷启动、原生 AgentLoop 与模型选择投影、工具多步请求、禁用/卸载/重装以及与另外三个 Bundle 同 Profile 共存。生命周期回归审计 **40/40 PASS**；后续 S3 原生可视化界面的额外验收见 [S3 验证记录](docs/S3-NATIVE-UI.md) 和 [验证汇总](docs/VALIDATION.md)。其它 DSH 版本、Windows Desktop、真实 Jev/付费 LLM 以及第三方路由器组合 **NOT TESTED**。
+- **关键修复**：原生 working-directory / session-reference 稍后插入提示词时，旧版本可能在第二个工具步骤误报“上下文不可测量”；当前按已验证的 Cordis 事件快照时机重新获取提示词，并逐步复查容量。真正超限的请求仍会 **Blocked**，不会通过关闭容量检查来冒险切换小窗口模型。
+- **升级回滚**：使用本页的固定完整 GitHub SHA 或固定 tgz；在外部终端停止 Host，保存旧包、原 SHA 以及 Profile 依赖与 lock，**只更新本插件**。重启后核对实际解析 commit、客户端/宿主代码和 `active`，Web 界面硬刷新。当前未发布正式 npm 包，`main` 的新增代码也不会自动更新既有安装。
+- **卸载与残留**：停宿主后通过原生插件管理器或上面的 `dsh plugin --profile web remove dsh-plugin-adaptive-router` 移除；冷启动后不应继续注册路由监听、Session Projection、Remote 服务及状态标签。普通卸载不会改写/清空 DSH 的原生历史 Session、已使用模型 Header 或 Profile 配置数据；这些保留记录不是活动路由残留。
+- **共存原则**：已知 Jev Effort Selector 冲突会触发本插件让出自动控制；其他自动路由插件无法可靠通用检测，建议单会话只使用一种自动路由方案。
+
+详见 [DSH 生命周期审计](docs/DSH-LIFECYCLE-AUDIT.md)，其中区分真实 Host 测试、脚本化 provider 和未测试平台。源码合并不等于发布新安装包或线上准确率验证。
+
 ## 配置
 
 在 **Web → 插件 → dsh-plugin-adaptive-router** 打开配置：

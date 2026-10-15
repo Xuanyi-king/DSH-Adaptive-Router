@@ -1,7 +1,8 @@
 // Jev request/abort/Choice parsing adapted from HalfBit's MIT-licensed askJev.
+import { engineFor, validEndpoint } from "./diagnostics.js";
 import type { ConfigValues } from "./config.js";
 import type { Decision, Previous, Tier } from "./router.js";
-export type Classification = Decision | { failure: string };
+export type Classification = (Decision & { confidenceKnown?: boolean }) | { failure: string };
 export function localSimple(
   text: string,
   previous: Previous | null,
@@ -31,6 +32,7 @@ export async function askJev(
 ): Promise<Classification> {
   if (signal?.aborted) return { failure: "cancelled" };
   if (!config.apiUrl.trim()) return { failure: "no-url" };
+  if (!validEndpoint(config.apiUrl)) return { failure: "invalid-url" };
   if (!key) return { failure: "no-key" };
   const questions: Record<string, unknown> = {
     tier: {
@@ -66,6 +68,8 @@ export async function askJev(
         new: "Unrelated new request or standalone question.",
       },
     };
+  const body = JSON.stringify({ model: config.classifierModel, state, questions });
+  if (Buffer.byteLength(body, "utf8") > 1024 * 1024) return { failure: "request-too-large" };
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener("abort", abort, { once: true });
@@ -81,11 +85,40 @@ export async function askJev(
         "content-type": "application/json",
         authorization: `Bearer ${key}`,
       },
-      body: JSON.stringify({ model: config.classifierModel, state, questions }),
+      body,
+      redirect: "error",
       signal: controller.signal,
     });
-    if (!response.ok) return { failure: "failed" };
-    const answers = (await response.json())?.answers;
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { failure: [401,403,413,422,429,529].includes(response.status) ? `http-${response.status}` : "failed" };
+    }
+    const reader = response.body?.getReader();
+    const parts: Uint8Array[] = []; let size = 0;
+    if (reader) for (;;) {
+      const chunk = await reader.read(); if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > 65536) { await reader.cancel(); return { failure: "response-too-large" }; }
+      parts.push(chunk.value);
+    }
+    let parsed;
+    try { parsed = JSON.parse(Buffer.concat(parts).toString("utf8")); }
+    catch { return { failure: "invalid-json" }; }
+    const answers = parsed?.answers;
+    const neo = engineFor(config) === "NeoHorse";
+    for (const [name, spec] of Object.entries(questions)) {
+      const labels = Object.keys((spec as { criteria: object }).criteria);
+      const answer = answers?.[name];
+      if (!answer || !labels.includes(answer.choice) || (answer.type !== undefined && answer.type !== "choice")) return { failure: "invalid-choice" };
+      if (answer.confidence !== undefined && (typeof answer.confidence !== "number" || !Number.isFinite(answer.confidence) || answer.confidence < 0 || answer.confidence > 1)) return { failure: "invalid-choice" };
+      const probabilities = answer.probabilities;
+      if (neo || probabilities !== undefined) {
+        if (!probabilities || typeof probabilities !== "object" || Array.isArray(probabilities)
+          || Object.keys(probabilities).length !== labels.length
+          || labels.some(id => typeof probabilities[id] !== "number" || !Number.isFinite(probabilities[id]) || probabilities[id] < 0 || probabilities[id] > 1)
+          || Math.abs(Object.values(probabilities).reduce<number>((sum, p) => sum + (p as number), 0) - 1) > .02) return { failure: "invalid-choice" };
+      }
+    }
     const tierAnswer = answers?.tier;
     const tiers: Tier[] = ["simple", "moderate", "complex"];
     if (!tiers.includes(tierAnswer?.choice))
@@ -128,6 +161,7 @@ export async function askJev(
           : relation.choice
         : "new",
       confidence,
+      ...(tierAnswer.confidence === undefined ? { confidenceKnown: false } : {}),
     };
   } catch {
     return {
@@ -137,4 +171,12 @@ export async function askJev(
     clearTimeout(timer);
     signal?.removeEventListener("abort", abort);
   }
+}
+
+/** Trusted Host-only synthetic probe; intentionally not exported as a browser Remote. */
+export async function probeJev(config: ConfigValues, key: string, signal?: AbortSignal) {
+  const started = Date.now();
+  const decision = await askJev(config, key, "Synthetic protocol check: continue implementing a small function and its tests.", true, signal);
+  return { engine: engineFor(config), model: config.classifierModel, at: Date.now(), elapsedMs: Date.now() - started,
+    ok: !("failure" in decision), ...("failure" in decision ? { failure: decision.failure } : {}) };
 }

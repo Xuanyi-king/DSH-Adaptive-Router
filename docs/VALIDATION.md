@@ -151,3 +151,35 @@ Playwright/Chromium 同样安装于临时目录，不进入项目依赖或发布
 修复后 `npm test` **54/54 通过，0 失败、0 跳过**，原有 52 项全部保留。
 `npm run build`、`npm pack`、`node --check lib/client.js` 和 `git diff --check` 通过，lib/client.js 与源文件同步。
 没有修改路由算法、配置结构、依赖或安装/卸载逻辑。本补丁未重新执行完整浏览器流程；上述 S3 完整 Web 验证属于收尾前的记录。
+
+## S4.1 路由可靠性与 NeoHorse 协议
+
+基于最新 main `6505471`；`npm ci`、`npm test`、`npm run build` 基线 **54/54**。
+本轮最终完整回归 **91/91 通过，0 失败、0 跳过**；保留全部原有测试。
+
+- 纯逻辑：四模式、Manual 无服务依赖、EFFORT_AUTO 无候选依赖、无档位模型默认、缺 URL/密钥/未知目录、已配置未验证、验证成功、固定档位不兼容、合法预设与自定义引用/阈值保留。
+- 本地真实 HTTP：Jev 和 NeoHorse tier/role/relation Choice、缺省与异常 confidence、完整概率、401/403/413/422/429/529/503、超时/取消、无效 JSON、缺字段/非法标签、网络失败、重定向、请求/响应大小限制、可信 Host 合成探针。无付费 API。
+- 真实 AgentLoop：Bypass 保留原生、授权备用真实 Header 确认、最终 request 覆盖、20 Turn 记录上限/会话隔离/无正文或凭据、dispose/卸载清理、晚到响应、凭据变更期间不得恢复旧验证。原有多步/缓存/目录变化/手动选择/容量增长与 ContextCapacityError 全保留。
+- React DOM：模式诊断、预设仅写草稿、静态检查零参数、不发送聊天/URL、旧端点失败不污染新草稿；原有保存互斥、修订拒绝、onDiscard 生命周期和目录异常回归保留。
+- `npm ci`、`npm test`、`npm run build`、`npm pack`、`node --check lib/client.js`、`git diff --check` 完成；lib 同步，运行时与开发依赖均未增加。
+
+### 完整目标 Web 验证
+
+隔离 `/tmp/dsh-s41-web` 安装官方 DSH `0.2.1-alpha.2` 和临时 Playwright；独立 DSH_HOME，通过官方 `dsh plugin --profile web add link:<repo>` 安装，`dsh web --patch <offline overlay> --no-open --port 18731` 启动。
+overlay 用官方 insert 语法注册离线原生 LlmAdapter，另启本地 HTTP System One fixture；所有 Key 均为合成值。
+
+| Chromium 中的实际操作 | 结果 |
+| --- | --- |
+| EFFORT_AUTO 无 URL 的提示；切换 Manual；恢复自动 | 正确显示 Needs Setup / Manual；无需编辑 YAML |
+| 应用 NeoHorse 托管预设并核对 URL、模型、默认凭据引用，再改为离线 fixture 保存 | 通过；原生 ConfigForms 持久化 |
+| 点击静态连接检查 | 展示未网络验证；HTTP fixture 请求数不增加 |
+| 发送合成编程请求，经 NeoHorse 格式 fixture 分类 | 完成；原生 Adapter 响应，真实 Header/标签为 自动 · Native Balanced |
+| 点击原生 Menu | 显示 Ready、NeoHorse 来源、真实档位及建议；仅一次分类 |
+| 深色/浅色、390px 窄屏、截图检查 | 通过；无页面横向溢出，未遮盖发送按钮 |
+| 最终浏览器流程 pageerror | 0 |
+
+验证夹具首次 overlay 缺少 insert 导致未注册 Adapter、首次自动化选择器与欢迎弹窗不匹配，均修正夹具后重新验证；不把这些失败尝试记为成功流程。
+本轮未重新做完整浏览器卸载/重装或 Windows Desktop 实机测试；这些流程的旧版 Web 记录见 S3，本轮卸载/中途卸载由 AgentLoop 回归覆盖。
+**未调用真实 Jev/NeoHorse 托管 API，也未测在线准确率。Web 网络探针按 D3 的保守替代未开放**；只提供静态检查和真实分类后的验证结果。
+另在隔离目录用 `npm install --omit=dev <tgz>` 安装生产包，导入正式入口与 diagnostics，核对所有 lib 字节一致、Bundle/文档/完整许可存在、没有 React/jsdom/esbuild/testkit：通过。最终构建重启 Host 后重跑上述 Chromium 流程通过。
+技术边界、固定源码版本和记录隐私见 [S4.1-RELIABILITY.md](S4.1-RELIABILITY.md)。没有 Release/npm 发布或合并 main。

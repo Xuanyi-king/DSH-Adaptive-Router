@@ -57,6 +57,7 @@ export declare function actualControl(actual: {
         selection?: typeof actual;
         control?: string;
         reason?: string;
+        fallbackApplied?: boolean;
     } | null;
 } | null): {
     control: string;

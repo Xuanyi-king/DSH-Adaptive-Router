@@ -51,3 +51,12 @@ No Python, proxy, ML runtime or model weights are bundled. Lockfile records the
 actual development test dependencies; their license files remain in their npm packages.
 
 S3 public API source paths and fixed target revision are recorded in [docs/S3-NATIVE-UI.md](docs/S3-NATIVE-UI.md).
+
+## S4.1 protocol reference
+
+NeoHorse-Jev — https://github.com/TokenRhythm/NeoHorse/tree/main/jev,
+revision `c494069accfc2d08839675961c1fdfcc54ba0b92`; `jev/LICENSE` is Apache-2.0.
+Reviewed `systemone.py`, `server.py` and `DEPLOYMENT.md` for the wire protocol,
+limits and confidence semantics; no source, runtime, weights or confidence formula
+copied. Presets and TypeScript wire validation are independently written.
+Existing Jev-derived code and full MIT notice remain unchanged in attribution.

@@ -20,29 +20,29 @@
 
 ## 安装
 
-仓库提供预构建的 `lib/`，可直接从 GitHub 安装（需要已安装目标版本 DSH 和 pnpm）。**S3 可视化配置仍在 [PR #4](https://github.com/Xuanyi-king/DSH-Adaptive-Router/pull/4)，尚未合入 main；以下命令专用于 S3 预览验收**：
+仓库提供预构建的 `lib/`，可直接从 GitHub 安装（需要已安装目标版本 DSH 和 pnpm）。**S3 原生可视化配置已通过 [PR #4](https://github.com/Xuanyi-king/DSH-Adaptive-Router/pull/4) 合入 main；尚未发布 npm 或正式稳定版**。下面固定到本次 S3 合并提交，避免 `main` 后续变化影响安装：
 
 ```bash
-dsh plugin --profile web add github:Xuanyi-king/DSH-Adaptive-Router#448c3ba461f4e9e6f8f06887b338cc56e6d84fdc
-# 重启 dsh web
+dsh plugin --profile web add github:Xuanyi-king/DSH-Adaptive-Router#02bd30b01cc24a5a96e869f6aef61a106de14828
+# 重启 dsh web，并硬刷新浏览器
 ```
 
-该完整 SHA 固定到包含 S3 原生模型选择器、快捷菜单及最终两项交互修复的代码快照，**不是正式发布版本**。此前 README 使用的 `01788c9b…` 属于 S3 之前的旧兼容修复版本，不包含本轮 UI。PR #4 合并后，正式安装说明应改为可长期访问的版本 Tag 或合并后的 main 完整 SHA，**不要继续把 PR 分支提交当作长期发布源**。切勿误以为当前的 `main` 已有 S3。
+此 SHA 包含 S3 模型目录勾选、能力/档位配置、聊天快捷菜单及两项收尾修复。目标环境为 DSH `0.2.1-alpha.2`、Node.js ≥22；离线模型与浏览器验收记录见 [VALIDATION.md](docs/VALIDATION.md)，**真实 Jev / 付费模型仍需实机验证**。它是固定的已合并源码快照，不表示发布了稳定版 Tag。后续发布正式版本时应改用可追溯的版本 Tag。
 
-普通安装/升级可能复用旧 lock commit。升级时从外部终端停止 Host，使用明确的完整 SHA 或构建好的 tarball，只更新本插件；保留原 SHA、tgz 和 Profile lock 便于回滚。安装后核对 lock 解析 SHA、磁盘 package 版本与原生插件条目的 active 状态，再重启 Host、硬刷新 Web Client。不要删除整个 lockfile 或顺带升级其他插件。
+普通安装/升级可能复用旧 lock commit。升级时先从外部终端停止 Host，再使用明确的完整 SHA 或构建好的 tarball，仅更新本插件；保留旧 SHA、tgz 和 Profile lock 便于回滚。安装后核对 lock 解析 SHA、磁盘 package 版本及原生插件 active 状态，然后重启 Host、硬刷新 Web Client。**不要删除整个 lockfile 或顺带升级其他插件**。
 
-尚未发布 npm 包。也可克隆源码、**检出同一 S3 预览提交**，再构建本地 tarball，避免默认克隆 main 时误装旧版：
+尚未发布 npm 包。也可克隆源码并**检出同一 S3 合并提交**，再构建本地 tarball：
 
 ```bash
 git clone https://github.com/Xuanyi-king/DSH-Adaptive-Router.git
 cd DSH-Adaptive-Router
-git checkout 448c3ba461f4e9e6f8f06887b338cc56e6d84fdc
+git checkout 02bd30b01cc24a5a96e869f6aef61a106de14828
 npm ci
 npm test
 npm pack
 
 dsh plugin --profile web add ./dsh-plugin-adaptive-router-0.1.0.tgz
-# 重启 dsh web
+# 重启 dsh web，并硬刷新浏览器
 ```
 
 开发时也可以链接已构建目录：

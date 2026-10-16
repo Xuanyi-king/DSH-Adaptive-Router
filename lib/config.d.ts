@@ -11,6 +11,7 @@ export interface CandidateConfig {
 }
 export interface ConfigValues {
     enabled: boolean;
+    labEnabled: boolean;
     mode: "FULL_AUTO" | "EFFORT_AUTO" | "MODEL_AUTO" | "MANUAL";
     lockModel: boolean;
     lockEffort: boolean;
@@ -25,3 +26,4 @@ export interface ConfigValues {
 }
 export declare const Config: Schema;
 export declare function readConfig(config: object): ConfigValues;
+export declare function routingKey(config: ConfigValues): string;

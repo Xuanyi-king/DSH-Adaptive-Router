@@ -4,7 +4,8 @@ import type { LlmCallConfig, LlmResolvedModelInfo, UserMessage } from "@deepseek
 import type {} from "@deepseek-ai/dsh-session-projection";
 import { renderPrompt, renderContextSnapshot, type PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
 import { z } from "zod";
-import { Config, readConfig, type ConfigValues } from "./config.js";
+import { mountLab } from "./lab-host.js";
+import { Config, readConfig, routingKey, type ConfigValues } from "./config.js";
 import { engineFor, validEndpoint } from "./diagnostics.js";
 import { askJev, localSimple } from "./classifier.js";
 import {
@@ -57,6 +58,7 @@ interface RecordState {
   source?: string;
   tier?: string;
   role?: string;
+  relation?: string;
   confidence?: number;
   elapsedMs?: number;
   at?: number;
@@ -136,7 +138,7 @@ export function apply(ctx: Context, config: object) {
       && (!sameModel(record.selection, record.actual) || record.selection.reasoningEffort !== record.actual.reasoningEffort)
       && !["Blocked", "Conflict"].includes(record.control);
     return { turn: record.turn, at: record.at, mode: record.mode, source: record.source,
-      tier: record.tier, role: record.role, confidence: record.confidence, elapsedMs: record.elapsedMs,
+      tier: record.tier, role: record.role, relation: record.relation, confidence: record.confidence, elapsedMs: record.elapsedMs,
       selection: record.selection, actual: record.actual ?? null, reason: overridden ? "native-override" : record.reason,
       control: overridden ? "Native" : record.control, fallbackApplied: record.fallbackApplied ?? false };
   }
@@ -223,7 +225,7 @@ export function apply(ctx: Context, config: object) {
       !signal.aborted &&
       revision === registryRevision &&
       live.enabled &&
-      JSON.stringify(live) === JSON.stringify(snapshot) &&
+      routingKey(live) === routingKey(snapshot) &&
       !conflict() &&
       manualState(agent)?.pending === null
     );
@@ -457,7 +459,7 @@ export function apply(ctx: Context, config: object) {
         const inspectedRevision = registryRevision;
         const prior = held.get(agent);
         if (prior?.turn === turn && prior.selection === null) return original;
-        if (prior?.turn === turn && prior.configKey !== JSON.stringify(s))
+        if (prior?.turn === turn && prior.configKey !== routingKey(s))
           return pass("settings-changed", "Native");
         if (prior?.turn === turn && prior.selection) {
           // An explicit capacity stop must remain a stop on a retry: original
@@ -522,9 +524,9 @@ export function apply(ctx: Context, config: object) {
           ));
         const elapsedMs = Date.now() - started;
         diagnostic = { mode: s.mode, source: local ? "Local" : engineFor(s), elapsedMs,
-          ...("failure" in decision ? {} : { tier: decision.tier, role: decision.role, confidence: "confidenceKnown" in decision && decision.confidenceKnown === false ? undefined : decision.confidence }) };
-        if (!disposed && !local && classifiedCredentialRevision === credentialRevision && JSON.stringify(settings()) === JSON.stringify(s) && !signal.aborted)
-          verification = { configKey: JSON.stringify(s), at: Date.now(), elapsedMs, ok: !("failure" in decision),
+          ...("failure" in decision ? {} : { tier: decision.tier, role: decision.role, relation: decision.relation, confidence: "confidenceKnown" in decision && decision.confidenceKnown === false ? undefined : decision.confidence }) };
+        if (!disposed && !local && classifiedCredentialRevision === credentialRevision && routingKey(settings()) === routingKey(s) && !signal.aborted)
+          verification = { configKey: routingKey(s), at: Date.now(), elapsedMs, ok: !("failure" in decision),
             ...("failure" in decision ? { failure: decision.failure } : {}) };
         // Settings/manual picks can change while the classifier is awaiting I/O.
         if (!canApply(agent, s, signal, inspectedRevision))
@@ -559,7 +561,7 @@ export function apply(ctx: Context, config: object) {
                   selection: selected,
                   reason: decision.failure,
                   control: "Fallback",
-                  configKey: JSON.stringify(s),
+                  configKey: routingKey(s),
                   registryRevision: inspectedRevision,
                   modelInfo: fallback.modelInfo,
                 });
@@ -613,7 +615,7 @@ export function apply(ctx: Context, config: object) {
                 : engineFor(s) === "NeoHorse" ? "neohorse" : "jev"
               : result.reason,
           control,
-          configKey: JSON.stringify(s),
+          configKey: routingKey(s),
           registryRevision: inspectedRevision,
           modelInfo: info,
         });
@@ -634,8 +636,8 @@ export function apply(ctx: Context, config: object) {
       const started = Date.now(), s = settings(), inspectedCredentialRevision = credentialRevision;
       let keyAvailable = false;
       try { keyAvailable = !!await withinBudget(keyFor(s), Math.min(s.timeoutMs, 5000), new AbortController().signal); } catch { /* Unknown key stays unavailable. */ }
-      const current = inspectedCredentialRevision === credentialRevision && JSON.stringify(settings()) === JSON.stringify(s);
-      const checked = current && verification?.configKey === JSON.stringify(s) ? verification : undefined;
+      const current = inspectedCredentialRevision === credentialRevision && routingKey(settings()) === routingKey(s);
+      const checked = current && verification?.configKey === routingKey(s) ? verification : undefined;
       return { keyAvailable: current ? keyAvailable : undefined, conflict: conflict(), engine: engineFor(s),
         verified: checked?.ok ?? false, verification: checked ? { at: checked.at, elapsedMs: checked.elapsedMs, ok: checked.ok, failure: checked.failure } : null,
         networkTestAvailable: false, networkTestReason: "静态检查已完成，未进行网络验证。当前版本不开放带凭据的远程网络探针；真实分类成功后才验证连接。",
@@ -681,4 +683,5 @@ export function apply(ctx: Context, config: object) {
   });
   ctx.on("session/disposed", session => { records.delete(String(session.id)); history.delete(String(session.id)); });
   ctx.effect(() => () => { disposed = true; records.clear(); history.clear(); verification = undefined; });
+  mountLab(ctx,config,id=>{const record=records.get(id);return record ? publicRecord(record) : null;});
 }

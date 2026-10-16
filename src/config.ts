@@ -11,6 +11,7 @@ export interface CandidateConfig {
 }
 export interface ConfigValues {
   enabled: boolean;
+  labEnabled: boolean;
   mode: "FULL_AUTO" | "EFFORT_AUTO" | "MODEL_AUTO" | "MANUAL";
   lockModel: boolean;
   lockEffort: boolean;
@@ -26,6 +27,7 @@ export interface ConfigValues {
 const tier = () => Schema.union(["simple", "moderate", "complex"]);
 export const Config: Schema = Schema.object({
   enabled: Schema.boolean().default(true).volatile(),
+  labEnabled: Schema.boolean().default(false).volatile().description("Opt-in local Router Lab metadata collection."),
   mode: Schema.union(["FULL_AUTO", "EFFORT_AUTO", "MODEL_AUTO", "MANUAL"])
     .default("FULL_AUTO")
     .volatile(),
@@ -81,6 +83,7 @@ export const Config: Schema = Schema.object({
 export function readConfig(config: object): ConfigValues {
   const defaults: ConfigValues = {
     enabled: true,
+    labEnabled: false,
     mode: "FULL_AUTO",
     lockModel: false,
     lockEffort: false,
@@ -105,3 +108,6 @@ export function readConfig(config: object): ConfigValues {
   }
   return defaults;
 }
+
+// Collection preference is deliberately excluded from routing/verification revisions.
+export function routingKey(config: ConfigValues): string { const {labEnabled: _lab, ...routing} = config; return JSON.stringify(routing); }

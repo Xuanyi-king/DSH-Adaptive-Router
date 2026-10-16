@@ -23,7 +23,7 @@ const primitives = {
   },
   Menu: ({open, anchor, items=[], onSelect, children}) => h('div',null,anchor,open && h('div',{role:'menu'}, items.map(i=>i.type==='label'?h('p',{key:i.id},i.text):i.type==='separator'?null:h('button',{key:i.id,disabled:i.disabled,onClick:()=>onSelect(i.id)},i.label)),children)),
 };
-function mount(t, setupState = null) {
+function mount(t, setupState = null, labHandler = null) {
   const dom = new JSDOM('<!doctype html><body><div id="root"></div></body>', {url:'http://localhost'});
   for (const key of ['window','document','HTMLElement','Event','MouseEvent']) globalThis[key] = dom.window[key];
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -34,13 +34,13 @@ function mount(t, setupState = null) {
   const scope={...config,async mutate(ops,revision) { writes.push({ops,revision}); if(!(writeGate ? await writeGate : answer)) return false; const next={...config.getSnapshot().value}; for(const op of ops) next[op.path[0]]=op.value; config.set({...config.getSnapshot(),value:next,revision:revision+1}); return true; }};
   const ctx={
     slots:{inject(_key,f){ const off=f(); if(typeof off==='function') cleanups.push(off); },register(options,component){ const entry={options,component}; entries.push(entry); return ()=>entries.splice(entries.indexOf(entry),1); }},
-    configForms:{get(){return scope;}}, connection:{rpc:{async call(base,method,payload){setupCalls.push({base,method,payload});return {ok:!!setupState,value:setupState};}}}, sessions:{binding(){return {session:{getSnapshot:()=>({running:false})}};}},
+    configForms:{get(){return scope;}}, connection:{rpc:{async call(base,method,payload){setupCalls.push({base,method,payload});if(method.startsWith("adaptiveRouterLab/")&&labHandler)return labHandler(method.split("/")[1],payload.args);return {ok:!!setupState,value:setupState};}}}, sessions:{binding(){return {session:{getSnapshot:()=>({running:false})}};}},
     remote:{$on(){return ()=>{};},session:{async modelCatalog(){return failing ? {ok:false,error:{code:'unavailable'}} : {ok:true,value:catalog};}}},
     pluginNavigation:{openBundle(){}}, get(key){return this[key];},
     effect(f){const off=f(); for(const item of [off].flat()) if(typeof item==='function') cleanups.push(item);},on(){return ()=>{};},inject(_deps,f){f(ctx);},
   };
   const loader={load(spec){plugin=spec.factory(name=>name==='react'?React:name==='@deepseek-ai/dsh-client-ui-primitives'?primitives:name==='@deepseek-ai/dsh-client-store'?{createSnapshotStore:store}:{});}};
-  vm.runInNewContext(fs.readFileSync('lib/client.js','utf8'),{window:{__ModuleLoader__:loader},console,setTimeout,clearTimeout,AbortController,structuredClone,URL:dom.window.URL});
+  vm.runInNewContext(fs.readFileSync('lib/client.js','utf8'),{window:{__ModuleLoader__:loader},console,setTimeout,clearTimeout,AbortController,structuredClone,Blob,URL:dom.window.URL});
   plugin.apply(ctx);
   const root=createRoot(document.getElementById('root'));
   t.after(async()=>{await act(async()=>root.unmount()); for(const off of cleanups.reverse()) off(); dom.window.close();});
@@ -214,4 +214,29 @@ test('staged endpoint does not inherit degraded health from the saved endpoint',
   await ui.click('应用预设到草稿');
   assert.doesNotMatch(document.querySelector('[aria-label="路由就绪状态"]').textContent,/Degraded|超时/);
   assert.match(document.querySelector('[aria-label="路由就绪状态"]').textContent,/Unverified/);
+});
+
+test('Router Lab opt-in is a native draft setting, not an immediate data write',async t=>{
+  const ui=mount(t);await ui.render('plugins.bundle.config');
+  await ui.click('启用实验数据采集');assert.equal(ui.writes.length,0);
+  await ui.click('保存');assert.equal(ui.config.getSnapshot().value.labEnabled,true);
+});
+test('Router Lab is explicit about unavailable access and maintenance remains a read-only link',async t=>{
+  const ui=mount(t);await ui.render('plugins.bundle.config');
+  assert.match(document.body.textContent,/观察性记录/);
+  assert.ok([...document.querySelectorAll('button')].some(b=>b.textContent==='检查更新'));
+  assert.equal(document.querySelector('a[href="https://github.com/Xuanyi-king/DSH-Adaptive-Router"]').getAttribute('target'),'_blank');
+});
+
+test('Router Lab binds feedback revision, requires clear confirmation and never checks updates on read',async t=>{
+  const calls=[];let value={available:true,domain:'own-domain',pending:0,dropped:0,summary:{turns:1,classified:0,controls:{Manual:1},outcomes:{completed:1},feedback:{},feedbackCount:0,fallbackApplied:0,classifierLatency:{meanMs:null,coverage:0},tokenCoverage:0,tokens:{inputTokens:{value:null,coverage:0}},models:[],configRevisions:1},recent:[{recordId:'a'.repeat(36),timestamp:Date.now(),turnNumber:3,revision:1,actualModel:'Real Fast',turnFinishReason:'completed',rating:null}],installation:{version:'0.1.0',sourceKind:'link',profile:'web'}};
+  const ui=mount(t,null,async(op,args)=>{calls.push({op,args});if(op==='feedback')value={...value,recent:[{...value.recent[0],rating:args.rating,revision:2}]};if(op==='clear')value={...value,recent:[],summary:{...value.summary,turns:0}};return {ok:true,value};});await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');assert.match(document.body.textContent,/Token 数据覆盖 0\/1/);assert.match(document.body.textContent,/completed 不是任务成功/);assert.ok(!calls.some(c=>c.op==='checkUpdates'));await ui.click('达到预期');assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),{op:'feedback',args:{id:'a'.repeat(36),rating:'met',revision:1}});await ui.click('需要返工');assert.equal(calls.at(-1).args.revision,2);await ui.click('清空实验数据');assert.notEqual(calls.at(-1).op,'clear');await ui.click('确认清空');assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),{op:'clear',args:{confirm:true}});assert.match(document.body.textContent,/暂无已持久化 Turn/);
+});
+
+test('Router Lab exports only explicit requests, keeps readonly actions disabled and drops stale reset results',async t=>{
+  const calls=[],downloads=[];let delayed;const summary={turns:0,classified:0,controls:{},outcomes:{},feedback:{},feedbackCount:0,fallbackApplied:0,classifierLatency:{meanMs:null,coverage:0},tokenCoverage:0,tokens:{},models:[],configRevisions:0};const ui=mount(t,null,async(op,args)=>{calls.push({op,args});if(op==='export')return {ok:true,value:args.format==='json'?{schemaVersion:1,records:[]}:'recordId'};if(op==='checkUpdates')return new Promise(r=>delayed=r);return {ok:true,value:{available:true,pending:0,dropped:0,summary,recent:[]}};});
+  window.URL.createObjectURL=blob=>{downloads.push(blob);return 'blob:fixture';};window.URL.revokeObjectURL=()=>{};window.HTMLAnchorElement.prototype.click=function(){};
+  await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');await ui.click('导出 JSON');await ui.click('导出 CSV');assert.equal(downloads.length,2);assert.deepEqual(calls.filter(c=>c.op==='export').map(c=>c.args.format),['json','csv']);
+  await act(async()=>ui.config.set({...ui.config.getSnapshot(),writable:false}));assert.equal([...document.querySelectorAll('button')].find(e=>e.textContent==='清空实验数据').disabled,true);
+  await ui.click('检查更新');assert.ok(delayed);await ui.render('plugins.bundle.config',{useAdaptiveLabEpoch:selector=>React.useSyncExternalStore(()=>()=>{},()=>selector(2))});await act(async()=>delayed({ok:true,value:{checkedAt:Date.now(),releaseStatus:'newer-release'}}));assert.doesNotMatch(document.body.textContent,/发现较新 Release/);
 });

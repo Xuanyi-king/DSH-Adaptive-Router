@@ -89,13 +89,24 @@ class Adapter extends LlmAdapter {
   }
 }
 async function setup(t, config = {}, intent = true) {
+  if(config.labEnabled){
+    const {mkdtemp,rm}=await import("node:fs/promises");const {join}=await import("node:path");const {tmpdir}=await import("node:os");
+    const root=await mkdtemp(join(tmpdir(),"router-lab-loop-"));t.after(()=>rm(root,{recursive:true,force:true}));
+    config={...config,__labRoot:root};
+  }
   const ctx = new Context();
   t.after(() => ctx.fiber.dispose());
   await mountAgentLoopTestDependencies(ctx);
+  if(config.__labRoot){
+    const {default:Storage}=await import("@deepseek-ai/dsh-storage");const domains=await import("@deepseek-ai/dsh-storage-domain");const json=await import("@deepseek-ai/dsh-storage-json");
+    ctx.provide("profileContext",{name:"web",dir:config.__labRoot});await ctx.plugin(Storage);await ctx.plugin(json,{root:config.__labRoot});await ctx.plugin(domains,{backend:"json"});
+    const {__labRoot,...rest}=config;config=rest;
+  }
   if (intent) installIntent(ctx);
   const adapter = new Adapter();
   ctx.effect(() => ctx.llm.registerAdapter(["p"], adapter));
   const fiber = await ctx.plugin(plugin, { candidates, ...config });
+  if(config.labEnabled)await ctx.get("adaptiveRouterLab").ready;
   const harness = await mountAgentLoopTestHarness(ctx);
   const agent = await harness.create(SessionId("test-main"), {
     provider: "p",
@@ -905,4 +916,12 @@ test('a final request override records the proposal separately from the committe
   assert.equal(state.decision.actual.model,'balanced');
   assert.equal(state.decision.control,'Native');
   assert.equal(state.decision.fallbackApplied,false);
+});
+
+test('Router Lab observes a real multi-step AgentLoop Turn once with native Header and Usage',async t=>{
+  const {ctx,adapter,agent}=await setup(t,{labEnabled:true});
+  ctx.tools.register({name:'lab-tool',description:'fixture',parameters:{type:'object',properties:{}},output:{schema:{type:'string'},render:()=>[{type:'text',text:'fixture tool output'}]},async execute(){return 'fixture';}});
+  adapter.stream=async function*(options){this.requests.push(options);yield {type:'usage',usage:{inputTokens:11,outputTokens:3,totalTokens:14}};if(this.requests.length===1){yield {type:'block-start',index:0,blockType:'tool-call'};yield {type:'tool-call-delta',index:0,id:ToolCallId('lab-call'),name:'lab-tool',argumentsDelta:'{}'};yield {type:'block-end',index:0,block:{type:'tool-call',id:ToolCallId('lab-call'),name:'lab-tool',arguments:'{}'}};yield {type:'finish',reason:{kind:'tool-calls'}};}else yield {type:'finish',reason:{kind:'stop'}};};
+  await send(agent,'你好');const lab=ctx.get('adaptiveRouterLab').lab;await lab.flush();const view=lab.view(),row=view.recent[0];assert.equal(view.summary.turns,1);assert.equal(row.modelRequestCount,2);assert.equal(row.toolStepCount,1);assert.equal(row.actualModel,agent.session.requestHeader().config.model);assert.equal(row.actualModel,'fast');assert.equal(row.inputTokens,22);assert.equal(row.outputTokens,6);assert.equal(row.turnFinishReason,'completed');assert.equal(row.rating,null);assert.equal(row.control,'Auto');
+  await send(agent,'继续');await lab.flush();assert.equal(lab.view().summary.turns,2);assert.equal(new Set(lab.view().recent.map(r=>r.sessionScope)).size,1);
 });

@@ -183,3 +183,32 @@ overlay 用官方 insert 语法注册离线原生 LlmAdapter，另启本地 HTTP
 **未调用真实 Jev/NeoHorse 托管 API，也未测在线准确率。Web 网络探针按 D3 的保守替代未开放**；只提供静态检查和真实分类后的验证结果。
 另在隔离目录用 `npm install --omit=dev <tgz>` 安装生产包，导入正式入口与 diagnostics，核对所有 lib 字节一致、Bundle/文档/完整许可存在、没有 React/jsdom/esbuild/testkit：通过。最终构建重启 Host 后重跑上述 Chromium 流程通过。
 技术边界、固定源码版本和记录隐私见 [S4.1-RELIABILITY.md](S4.1-RELIABILITY.md)。没有 Release/npm 发布或合并 main。
+
+## S4.2A Router Lab 与只读更新检查
+
+基线 main `2835c8f`：`npm ci`、`npm test`、`npm run build`，**91/91**。保留原有全部单元与真实 AgentLoop 回归，未改 chooseRoute/effort/classifier 算法。
+
+新增验证包括：默认关闭/插件禁用停止采集、Turn 多步骤与原生 Header/Usage、缺失 Usage 为 null、失败尝试最终 usage 去重、反馈修订与清空竞态、失败在途写入不可复活、5000条/90天/有界队列与长 Turn 档位分布上限、跨 Profile/Session 隔离、真实原生 JSON Domain 跨 Host 重启与0600文件、采集偏好不影响路由修订、Fallback 已确认发生语义、有效远程分类延迟分母、原生认证 operator / 只读限制 / 4 KiB 请求上限 / 精确路径卸载清理。
+
+更新使用固定源合成响应测试：无 Release、较新 Release、main/仅文档差异、未知/声明/已确认安装 SHA、npm/tgz/link、兼容性未确认与不匹配、403/404/429、网络失败、5秒超时、取消、非法 JSON/重定向/大响应、并发合并与缓存。无 shell/安装/lock 修改路径。
+
+React DOM 覆盖原生采集草稿保存、权限/空状态、反馈绑定和 revision、清空第二次确认、JSON/CSV 下载、只读禁写、连接重置迟到结果丢弃；保留修订冲突、onDiscard 和快捷互斥回归。
+
+### 实际目标 Web / Chromium
+
+隔离 `/tmp/dsh-s42-web` 安装官方 DSH `0.2.1-alpha.2` / 临时 Playwright，独立 `DSH_HOME=/tmp/dsh-s42-home`，仅测试 Profile 用官方管理器 link 本工作目录；真实用户 Profile 未动。原生离线 Adapter 提供 64K/200K 目录和固定文本/Usage，未调用付费模型。使用真实浏览器鉴权、ConfigForms、模型目录、Session、Storage Domain 与 Header。
+
+| 交互 | 结果 |
+| --- | --- |
+| 原生配置发现模型，启用采集/候选并保存 | 通过；无需编辑插件 YAML |
+| 两次日常 Turn，第一轮 Local 自动路由、下一轮 no-url Bypass | 2条；每 Turn 一条，实际模型为 Native Quick；Provider Usage 覆盖2/2 |
+| 反馈达到预期，导出 JSON/CSV | 通过；UUID/revision 对应原记录，JSON 2条、反馈1条 |
+| 用户主动检查真实 GitHub | 返回暂无正式 Release、link来源、无法确认安装SHA，不判最新；无安装/升级 |
+| 浏览器未认证 POST | 401；授权后可读；远程/foreign Peer 另由权限回归验证 |
+| 明暗主题、390px窄屏、截图 | 已实际浏览器检查；无页面横向溢出 |
+
+首轮 Web 暴露 `/api` interceptor 单例冲突；替换 rpc.handle 后又实际复现目标版本 Cordis shadow Context 的 webServer 注入错误。最终使用官方 `connection.fetch.register` 精确路由 + `connection.admit(request)`，不修改 Core、不绕过权限。初次自动化遇到欢迎弹窗及发送后 composer 可访问名称变化，修正夹具后重新跑通，不把失败尝试计为成功。
+
+最终 `npm ci`、`npm test` **135/135 通过，0失败、0跳过**，`npm run build`、`npm pack`、`node --check lib/client.js`、`git diff --check` 通过。最终构建重启后恢复2条记录、1条反馈、采集与候选配置；取消清空保留2条、二次确认后为0，并关闭采集保存；再次重启最终构建确认仍为0条且采集关闭。暗色/亮色、390px和键盘折叠通过，最终浏览器 pageerror 0。
+
+隔离 `npm install --omit=dev <tgz>` 成功，导入正式入口、逐文件核对 lib 字节与完整许可证/文档，未安装 React/jsdom/esbuild/Storage测试包。运行时依赖不变；新增3个0.2.1-alpha.2 Storage开发测试包，没有新增存储服务。tarball 35项、约96 KiB，排除 screenshots、测试夹具、原始实验数据、缓存和本地凭据；截图仅提交到仓库用于审查。真实 Windows Desktop、真实 Jev/NeoHorse 和付费 Provider 在线请求未执行；没有因果效果、节省费用或分类准确率结论。

@@ -60,3 +60,7 @@ Reviewed `systemone.py`, `server.py` and `DEPLOYMENT.md` for the wire protocol,
 limits and confidence semantics; no source, runtime, weights or confidence formula
 copied. Presets and TypeScript wire validation are independently written.
 Existing Jev-derived code and full MIT notice remain unchanged in attribution.
+
+## S4.2A references
+
+Native Storage Domain / JSON backend / Connection authorization / plugin installation metadata use public DeepSeek Harness APIs at the pinned target revision documented in `docs/S4.2A-ROUTER-LAB.md`. No native implementation source is copied; Storage packages are development-only test dependencies. `oh-my-dsh/dsh-plugin-upgrade-skill`, revision `ef075767b476e8000c716a18f848028eebcd5aef`, `skills/plugin-upgrade/SKILL.md` Mode A (MIT, Copyright (c) 2026 dsh-plugin-upgrade-skill contributors), informed the read-only check and rollback guidance. No skill source is copied or installed as a dependency.

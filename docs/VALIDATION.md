@@ -212,3 +212,15 @@ React DOM 覆盖原生采集草稿保存、权限/空状态、反馈绑定和 re
 最终 `npm ci`、`npm test` **135/135 通过，0失败、0跳过**，`npm run build`、`npm pack`、`node --check lib/client.js`、`git diff --check` 通过。最终构建重启后恢复2条记录、1条反馈、采集与候选配置；取消清空保留2条、二次确认后为0，并关闭采集保存；再次重启最终构建确认仍为0条且采集关闭。暗色/亮色、390px和键盘折叠通过，最终浏览器 pageerror 0。
 
 隔离 `npm install --omit=dev <tgz>` 成功，导入正式入口、逐文件核对 lib 字节与完整许可证/文档，未安装 React/jsdom/esbuild/Storage测试包。运行时依赖不变；新增3个0.2.1-alpha.2 Storage开发测试包，没有新增存储服务。tarball 35项、约96 KiB，排除 screenshots、测试夹具、原始实验数据、缓存和本地凭据；截图仅提交到仓库用于审查。真实 Windows Desktop、真实 Jev/NeoHorse 和付费 Provider 在线请求未执行；没有因果效果、节省费用或分类准确率结论。
+
+### PR #7 两项 P1 收尾
+
+起点/最新审查 HEAD `40214850a8556bd04a860997383301202f6b1ac8`，现有分支继续；先运行 npm ci/test/build，基线135/135。最终156/156通过，原135项保留（旧“档位分布”用例按原生事件不披露逐请求档位修正为 unknown）。
+
+新增21项：真实AgentLoop同Turn fast→coder和原生Session契约的错误Header/失败尝试/成功结算/重复seq/Usage有无；模型请求已确认2+unknown2=总4，Token覆盖1/2；内存与真实原生Domain旧schema重启/反馈/导出兼容；固定声明SHA的ahead/behind/identical/diverged、404/422/429/500、元数据矛盾/外仓库、长历史/300文件/不完整清单/重命名代码、tgz不判最新、证据变更缓存失效、Host无需先读面板即可检查、React UI区分实际/声明/main。
+
+真实固定源只读探针（临时Node使用环境代理，无个人Token）：S4.1固定SHA→main `2835c8f` 返回ahead 1、完整文件清单仅文档；审查SHA `4021485`→main 返回behind 1。均显示actual unknown且无Release；没有执行安装、shell、lock修改或重启。初次直接网络超时/失败，与后续成功分开记录。
+
+本轮不声称新增Windows Desktop或完整DSH Web验证；使用真实AgentLoop、原生Session/Storage及jsdom。旧版Web截图属于此前S4.2A验收。兼容性与模型归属边界见S4.2A说明的P1节。
+
+收尾重新执行 `npm ci`、`npm test`（156/156）、`npm run build`、`npm pack`、`node --check lib/client.js`、`git diff --check`，全部通过。Runtime/peer 依赖和锁文件未修改；tarball 35项，lib 与工作区字节一致，不含测试、截图、实验数据或凭据。

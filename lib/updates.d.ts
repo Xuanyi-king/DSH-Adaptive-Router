@@ -17,10 +17,12 @@ export declare class UpdateChecker {
     private clock;
     private pending?;
     private last;
+    private evidenceKey;
     private abort;
     constructor(fetcher?: typeof fetch, clock?: () => number);
     get state(): any;
     check(current: Installation): Promise<any>;
+    private compare;
     private json;
     private run;
     close(): void;

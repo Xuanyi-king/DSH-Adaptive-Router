@@ -7,7 +7,7 @@ import {
   mountAgentLoopTestDependencies,
   mountAgentLoopTestHarness,
 } from "@deepseek-ai/dsh-agent-loop-testkit";
-import { LlmAdapter, createUserMessage, ToolCallId } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter, createUserMessage, createAssistantMessage, ToolCallId } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { agentEvents, installModelSelection } from "@deepseek-ai/dsh-agent";
 import * as plugin from "../lib/index.js";
@@ -924,4 +924,20 @@ test('Router Lab observes a real multi-step AgentLoop Turn once with native Head
   adapter.stream=async function*(options){this.requests.push(options);yield {type:'usage',usage:{inputTokens:11,outputTokens:3,totalTokens:14}};if(this.requests.length===1){yield {type:'block-start',index:0,blockType:'tool-call'};yield {type:'tool-call-delta',index:0,id:ToolCallId('lab-call'),name:'lab-tool',argumentsDelta:'{}'};yield {type:'block-end',index:0,block:{type:'tool-call',id:ToolCallId('lab-call'),name:'lab-tool',arguments:'{}'}};yield {type:'finish',reason:{kind:'tool-calls'}};}else yield {type:'finish',reason:{kind:'stop'}};};
   await send(agent,'你好');const lab=ctx.get('adaptiveRouterLab').lab;await lab.flush();const view=lab.view(),row=view.recent[0];assert.equal(view.summary.turns,1);assert.equal(row.modelRequestCount,2);assert.equal(row.toolStepCount,1);assert.equal(row.actualModel,agent.session.requestHeader().config.model);assert.equal(row.actualModel,'fast');assert.equal(row.inputTokens,22);assert.equal(row.outputTokens,6);assert.equal(row.turnFinishReason,'completed');assert.equal(row.rating,null);assert.equal(row.control,'Auto');
   await send(agent,'继续');await lab.flush();assert.equal(lab.view().summary.turns,2);assert.equal(new Set(lab.view().recent.map(r=>r.sessionScope)).size,1);
+});
+
+test('Lab attributes two actual AgentLoop models in one Turn independently of final Header',async t=>{
+ const {ctx,adapter,agent}=await setup(t,{labEnabled:true});
+ ctx.tools.register({name:'switch-native-model',description:'fixture',parameters:{type:'object',properties:{}},output:{schema:{type:'string'},render:()=>[{type:'text',text:'switched'}]},async execute(){agent.session.append('model/selection',{provider:'p',model:'coder',reasoningEffort:'high'});installModelSelection(agent.ctx,{current:{provider:'p',model:'coder',reasoningEffort:'high'},assembled:undefined});return 'switched';}});
+ adapter.stream=async function*(options){this.requests.push(options);yield {type:'usage',usage:{inputTokens:9,outputTokens:2,totalTokens:11}};if(this.requests.length===1){yield {type:'block-start',index:0,blockType:'tool-call'};yield {type:'tool-call-delta',index:0,id:ToolCallId('switch'),name:'switch-native-model',argumentsDelta:'{}'};yield {type:'block-end',index:0,block:{type:'tool-call',id:ToolCallId('switch'),name:'switch-native-model',arguments:'{}'}};yield {type:'finish',reason:{kind:'tool-calls'}};}else yield {type:'finish',reason:{kind:'stop'}};};
+ await send(agent,'你好');const lab=ctx.get('adaptiveRouterLab').lab;await lab.flush();const row=lab.view().recent[0];assert.deepEqual(adapter.requests.map(r=>r.model),['fast','coder']);assert.equal(row.actualModel,'coder');assert.deepEqual(row.routes.map(r=>[r.model,r.count]),[['fast',1],['coder',1]]);assert.equal(row.modelRequestCount,2);assert.equal(row.inputTokens,18);assert.equal(lab.view().summary.requestAttribution.confirmed,2);assert.equal(row.control,'Manual');
+});
+
+test('native Session contract: failed settlement has no route, message source beats Header, missing Usage stays unknown',async t=>{
+ const {ctx,agent}=await setup(t,{labEnabled:true,mode:'MANUAL'}),s=agent.session,lab=ctx.get('adaptiveRouterLab').lab;await send(agent,'bootstrap');await lab.clear();
+ s.append('turn/start',{turn:2});s.append('step/start',{turn:2,step:1});s.append('request/header',{header:{...s.requestHeader(),config:{...s.requestHeader().config,provider:'p',model:'coder',reasoningEffort:'high'}},reason:'change'});
+ s.append('assistant/attempt',{turn:2,step:1,stream:[{type:'chunk',time:Date.now(),chunk:{type:'usage',usage:{inputTokens:3,outputTokens:1,totalTokens:4}}}]});
+ const event=s.append('assistant/message',{turn:2,step:1,message:createAssistantMessage({source:{provider:'p',model:'fast'},content:[]}),usage:{inputTokens:7,outputTokens:2,totalTokens:9},stream:[]},{surfaceOp:'append'});lab.observe(s,event);
+ s.append('step/end',{turn:2,step:1});s.append('turn/end',{turn:2,reason:{kind:'completed'}});await lab.flush();let view=lab.view();assert.equal(view.summary.turns,1);assert.equal(view.recent[0].actualModel,'coder');assert.equal(view.recent[0].inputTokens,10);assert.deepEqual(view.recent[0].routes.map(r=>[r.model,r.count]),[['unknown',1],['fast',1]]);assert.equal(view.recent[0].modelRequestCount,2);
+ s.append('turn/start',{turn:3});s.append('step/start',{turn:3,step:1});s.append('assistant/attempt',{turn:3,step:1,stream:[]});s.append('assistant/message',{turn:3,step:1,message:createAssistantMessage({source:{provider:'p',model:'balanced'},content:[]}),usage:{inputTokens:8,outputTokens:2,totalTokens:10},stream:[]},{surfaceOp:'append'});s.append('step/end',{turn:3,step:1});s.append('turn/end',{turn:3,reason:{kind:'error',error:{code:'UNKNOWN',message:'fixture'}}});await lab.flush();view=lab.view();assert.equal(view.recent[0].inputTokens,null);assert.equal(view.summary.tokenCoverage,1);assert.equal(view.summary.turns,2);assert.equal(view.summary.requestAttribution.total,4);assert.equal(view.summary.requestAttribution.confirmed,2);assert.equal(view.summary.requestAttribution.unknown,2);assert.equal(view.summary.models.reduce((n,m)=>n+m.requests,0),4);
 });

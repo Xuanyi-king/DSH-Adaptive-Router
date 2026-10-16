@@ -7,11 +7,11 @@ const textFields = ['experimentConfigRevision','routingMode','classifierEngine',
 const numberFields = ['turnNumber','confidence','classifierElapsedMs','elapsedMs','modelRequestCount','toolStepCount','retryCount','inputTokens','outputTokens','cacheReadTokens','cacheWriteTokens','reasoningTokens','feedbackTimestamp'] as const;
 const tokenFields = ['inputTokens','outputTokens','cacheReadTokens','cacheWriteTokens','reasoningTokens'] as const;
 type Route = { provider: string; model: string; count: number; efforts: Record<string, number> };
-export type LabRow = { schemaVersion: 1; recordId: string; timestamp: number; revision: number; routerBuildVersion: string; routerBuildCommit: string | null; fallbackApplied: boolean; routes: Route[]; routesTruncated: boolean }
+export type LabRow = { requestAttribution?: 'message-source' | 'legacy-header'; schemaVersion: 1; recordId: string; timestamp: number; revision: number; routerBuildVersion: string; routerBuildCommit: string | null; fallbackApplied: boolean; routes: Route[]; routesTruncated: boolean }
   & Record<typeof textFields[number], string | null> & Record<typeof numberFields[number], number | null>;
 const textShape = Object.fromEntries(textFields.map(k=>[k,z.string().max(160).nullable()])) as Record<typeof textFields[number], z.ZodNullable<z.ZodString>>;
 const numberShape = Object.fromEntries(numberFields.map(k=>[k,z.number().finite().nonnegative().nullable()])) as Record<typeof numberFields[number], z.ZodNullable<z.ZodNumber>>;
-const rowSchema = z.object({ schemaVersion:z.literal(1),recordId:z.string().uuid(),timestamp:z.number().nonnegative(),revision:z.number().int().positive(),routerBuildVersion:z.string().max(80),routerBuildCommit:z.string().max(40).nullable(),fallbackApplied:z.boolean(),routesTruncated:z.boolean(),
+const rowSchema = z.object({ requestAttribution:z.enum(['message-source','legacy-header']).optional(),schemaVersion:z.literal(1),recordId:z.string().uuid(),timestamp:z.number().nonnegative(),revision:z.number().int().positive(),routerBuildVersion:z.string().max(80),routerBuildCommit:z.string().max(40).nullable(),fallbackApplied:z.boolean(),routesTruncated:z.boolean(),
   routes:z.array(z.object({provider:z.string().max(160),model:z.string().max(160),count:z.number().int().nonnegative(),efforts:z.record(z.string().max(80),z.number().int().nonnegative())}).strict()).max(16),
   ...textShape,...numberShape }).strict().refine(r=>Buffer.byteLength(JSON.stringify(r))<=4096) as z.ZodType<LabRow>;
 const snapshotSchema=z.object({schemaVersion:z.literal(1),salt:z.string().uuid(),records:z.array(rowSchema).max(5000)}).strict();
@@ -30,22 +30,30 @@ export function summarize(rows:LabRow[]) {
   const totals=Object.fromEntries(tokenFields.map(k=>[k,{value:0,coverage:0}]));
   const controls:Record<string,number>={},outcomes:Record<string,number>={},feedback:Record<string,number>={},models=new Map<string,any>();
   let classified=0,elapsed=0,latencyCount=0;
+  const requestAttribution={confirmed:0,unknown:0,total:0,legacyTurns:0,countMissingTurns:0};
+  const addRoute=(route:Route,tier:string|null)=>{const key=JSON.stringify([route.provider,route.model]);const m=models.get(key)??{provider:route.provider,model:route.model,requests:0,efforts:Object.create(null),tiers:Object.create(null)};m.requests+=route.count;
+    for(const [effort,n]of Object.entries(route.efforts))m.efforts[effort]=(m.efforts[effort]??0)+n;
+    m.tiers[tier??'unknown']=(m.tiers[tier??'unknown']??0)+route.count;models.set(key,m);};
   for(const r of rows){controls[r.control??'unknown']=(controls[r.control??'unknown']??0)+1;outcomes[r.turnFinishReason??'unknown']=(outcomes[r.turnFinishReason??'unknown']??0)+1;
     if(r.rating)feedback[r.rating]=(feedback[r.rating]??0)+1;
     if(r.tier)classified++;
     if(r.tier&&['Jev','NeoHorse'].includes(r.source??'')&&r.classifierElapsedMs!==null){elapsed+=r.classifierElapsedMs;latencyCount++;}
     for(const k of tokenFields)if(r[k]!==null){totals[k].value+=r[k]!;totals[k].coverage++;}
-    for(const route of r.routes){const key=JSON.stringify([route.provider,route.model]);const m=models.get(key)??{provider:route.provider,model:route.model,requests:0,efforts:Object.create(null),tiers:Object.create(null)};m.requests+=route.count;
-      for(const [effort,n]of Object.entries(route.efforts))m.efforts[effort]=(m.efforts[effort]??0)+n;
-      m.tiers[r.tier??'unknown']=(m.tiers[r.tier??'unknown']??0)+route.count;models.set(key,m);}
+    if(r.modelRequestCount===null)requestAttribution.countMissingTurns++;else requestAttribution.total+=r.modelRequestCount;
+    let accounted=0;
+    if(r.requestAttribution==='message-source')for(const route of r.routes){addRoute(route,r.tier);accounted+=route.count;if(route.provider!=='unknown'||route.model!=='unknown')requestAttribution.confirmed+=route.count;}
+    else requestAttribution.legacyTurns++;
+    const unrepresented=Math.max(0,(r.modelRequestCount??0)-accounted);
+    if(unrepresented)addRoute({provider:'unknown',model:'unknown',count:unrepresented,efforts:{unknown:unrepresented}},r.tier);
   }
   for(const k of tokenFields)if(!totals[k].coverage)(totals[k] as {value:number|null}).value=null;
-  return {turns:rows.length,classified,controls,outcomes,feedback,feedbackCount:Object.values(feedback).reduce((a,b)=>a+b,0),fallbackApplied:rows.filter(r=>r.fallbackApplied).length,
+  requestAttribution.unknown=requestAttribution.total-requestAttribution.confirmed;
+  return {requestAttribution,turns:rows.length,classified,controls,outcomes,feedback,feedbackCount:Object.values(feedback).reduce((a,b)=>a+b,0),fallbackApplied:rows.filter(r=>r.fallbackApplied).length,
     tokenCoverage:rows.filter(r=>r.inputTokens!==null&&r.outputTokens!==null).length,tokens:totals,classifierLatency:{meanMs:latencyCount?elapsed/latencyCount:null,coverage:latencyCount},
     models:[...models.values()].slice(0,50),modelsTruncated:models.size>50,distributionTruncated:rows.filter(r=>r.routesTruncated).length,configRevisions:new Set(rows.map(r=>r.experimentConfigRevision)).size};
 }
-const csvColumns=['schemaVersion','recordId','timestamp','routerBuildVersion','routerBuildCommit',...textFields,...numberFields,'fallbackApplied'] as const;
-export function exportCsv(rows:LabRow[]) {const cell=(v:unknown)=>{let s=v==null?'':String(v);if(/^[\s]*[=+\-@\t\r\n]/u.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};return '\uFEFF'+csvColumns.join(',')+'\r\n'+rows.map(r=>csvColumns.map(k=>cell(r[k])).join(',')).join('\r\n');}
+const csvColumns=['schemaVersion','recordId','timestamp','routerBuildVersion','routerBuildCommit',...textFields,...numberFields,'fallbackApplied','requestAttribution'] as const;
+export function exportCsv(rows:LabRow[]) {const cell=(v:unknown)=>{let s=v==null?'':String(v);if(/^[\s]*[=+\-@\t\r\n]/u.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};return '\uFEFF'+csvColumns.join(',')+'\r\n'+rows.map(r=>csvColumns.map(k=>cell(k==='requestAttribution'?(r.requestAttribution??'legacy-header'):r[k])).join(',')).join('\r\n');}
 export class RouterLab {
   private domain?:LabDomain;private rows:LabRow[]=[];private salt:string=randomUUID();private pending=new Map<string,LabRow>();
   private active=new Map<string,{row:LabRow;lastSeq:number;lastTool:number;lastStep:number}>();
@@ -77,21 +85,25 @@ export class RouterLab {
       const hash=(s:string)=>createHmac('sha256',this.salt).update(s).digest('hex').slice(0,32);
       const row={...strings,...numbers,schemaVersion:1,recordId:randomUUID(),timestamp:event.time,revision:1,routerBuildVersion:this.version,routerBuildCommit:null,
         experimentConfigRevision:hash(JSON.stringify(fingerprint)),sessionScope:hash(id),routingMode:c.mode,classifierEngine:engineFor(c),classifierModel:str(c.classifierModel),turnNumber:d.turn,
-        modelRequestCount:0,toolStepCount:0,usageSource:'unavailable',durationSource:'observed',qualitySource:'unknown',fallbackApplied:false,routes:[],routesTruncated:false} as LabRow;
+        requestAttribution:'message-source',modelRequestCount:0,toolStepCount:0,usageSource:'unavailable',durationSource:'observed',qualitySource:'unknown',fallbackApplied:false,routes:[],routesTruncated:false} as LabRow;
       this.active.set(id,{row,lastSeq:event.seq,lastTool:-1,lastStep:0});return;
     }
     const a=this.active.get(id);if(!a||event.seq<=a.lastSeq||(d.turn!==undefined&&d.turn!==a.row.turnNumber))return;a.lastSeq=event.seq;
-    const r=a.row;const header=session.requestHeader().config;
-    r.actualProvider=str(header.provider);r.actualModel=str(header.model);r.actualEffort=str(header.reasoningEffort);
+    const r=a.row;const header=session.requestHeader()?.config;
+    r.actualProvider=str(header?.provider);r.actualModel=str(header?.model);r.actualEffort=str(header?.reasoningEffort);
     if(event.type==='step/start')a.lastStep=d.step;
     if(event.type==='tool/call'&&a.lastTool!==d.step){a.lastTool=d.step;r.toolStepCount!++;}
     if(event.type==='llm/retry-started')r.retryCount=(r.retryCount??0)+1;
     if(event.type==='assistant/message'||event.type==='assistant/attempt'){
-      const usage=d.usage??d.stream?.findLast((s:any)=>s.type==='chunk'&&s.chunk?.type==='usage')?.chunk.usage;
+      const usage=(event.type==='assistant/message'?d.usage:undefined)??d.stream?.findLast((s:any)=>s.type==='chunk'&&s.chunk?.type==='usage')?.chunk.usage;
       const first=r.modelRequestCount===0;r.modelRequestCount!++;
       for(const k of tokenFields){const n=count(usage?.[k]);r[k]=first?n:r[k]===null||n===null?null:r[k]!+n;if(r[k]!==null&&!Number.isSafeInteger(r[k]))r[k]=null;}
       r.usageSource=r.inputTokens!==null&&r.outputTokens!==null?'provider-reported':(usage||r.usageSource!=='unavailable')?'provider-reported-partial':'unavailable';
-      const provider=r.actualProvider??'unknown',model=r.actualModel??'unknown',effort=r.actualEffort??'default';
+      // Native message settlements carry request identity; failed attempts do not.
+      const source=event.type==='assistant/message'&&d.message?.source?.kind==='model'?d.message.source:undefined;
+      const knownSource=!!str(source?.provider)?.trim()&&!!str(source?.model)?.trim();
+      const provider=knownSource?str(source.provider)!:'unknown',model=knownSource?str(source.model)!:'unknown';
+      const effort='unknown'; // Neither native settlement event proves per-request effort.
       let route=r.routes.find(m=>m.provider===provider&&m.model===model);if(!route&&r.routes.length<16){route={provider,model,count:0,efforts:{}};r.routes.push(route);}if(route){route.count++;const known=Object.hasOwn(route.efforts,effort);if(effort.length>80||(!known&&Object.keys(route.efforts).length>=16))r.routesTruncated=true;else Object.defineProperty(route.efforts,effort,{value:(known?route.efforts[effort]:0)+1,enumerable:true,configurable:true,writable:true});}else r.routesTruncated=true;
     }
     if(event.type==='turn/end'){
@@ -116,6 +128,6 @@ export class RouterLab {
   async clear(){this.clearing=true;this.epoch++;this.active.clear();this.pending.clear();clearTimeout(this.timer);this.timer=undefined;
     return this.serial(async()=>{if(this.closed||!this.domain)throw Error('unavailable');const next=blank();await this.domain.global.set(next);this.rows=[];this.pending.clear();this.salt=next.salt;this.error=null;return this.view();}).finally(()=>{this.clearing=false;});}
   view(){return {available:!!this.domain&&!this.closed,domain:this.domainName,error:this.error,clearing:this.clearing,pending:this.pending.size,dropped:this.dropped,summary:summarize(this.rows),recent:structuredClone(this.rows.slice(-25).reverse())};}
-  async export(format:string){await this.flush();if(!this.domain||this.error)throw Error('storage-unavailable');if(format==='csv')return exportCsv(this.rows);if(format!=='json')throw Error('invalid-format');return {schemaVersion:1,exportedAt:new Date(this.clock()).toISOString(),experimentMetadata:{unit:'DSH Turn',observational:true,causalEvidence:false},records:structuredClone(this.rows),dataQualitySummary:summarize(this.rows)};}
+  async export(format:string){await this.flush();if(!this.domain||this.error)throw Error('storage-unavailable');if(format==='csv')return exportCsv(this.rows);if(format!=='json')throw Error('invalid-format');return {schemaVersion:1,exportedAt:new Date(this.clock()).toISOString(),experimentMetadata:{unit:'DSH Turn',observational:true,causalEvidence:false},records:structuredClone(this.rows.map(r=>({...r,requestAttribution:r.requestAttribution??'legacy-header'}))),dataQualitySummary:summarize(this.rows)};}
   async close(){this.closed=true;this.active.clear();await this.flush();await this.chain;await this.domain?.close();}
 }

@@ -23,6 +23,11 @@ export function mountLab(ctx:Context,config:object,recordFor:(id:string)=>any){
   on('settings/document-updated',()=>lab.sync());
   ctx.inject(['connection','webServer'],child=>{
     const connection=(child as any).connection;
+    const inspectInstallation=async()=>{
+      let next:Installation={version:manifest.version,...identifySource(),profile:profile?.name??null,targetDsh:'0.2.1-alpha.2'};
+      try{const bundles=await (child.get('pluginManager') as any)?.listBundles();const bundle=bundles?.find((b:any)=>b.name===manifest.name);next={...next,...identifySource(bundle?.source),version:bundle?.version??manifest.version};}catch{/* Failed public discovery must not reuse stale source evidence. */}
+      installation=next;return next;
+    };
     const handle=async(endpoint:string,payload:any,_signal:AbortSignal,peer:unknown)=>{
       const denied=()=>({ok:false,error:{code:'lab/forbidden',message:'Router Lab 仅供原生认证的本地 operator Profile；远程或未知边界不开放数据访问。',details:{}}});
       if(closed||!localOperator(connection,child.get('webServer'),peer))return denied();
@@ -34,7 +39,7 @@ export function mountLab(ctx:Context,config:object,recordFor:(id:string)=>any){
         let value:any;
         if(op==='read'){
           if(Object.keys(args).length)throw Error('invalid-request');await lab.flush();
-          try {const bundles=await (child.get('pluginManager') as any)?.listBundles();const bundle=bundles?.find((b:any)=>b.name===manifest.name);installation={...installation,...identifySource(bundle?.source),version:bundle?.version??manifest.version};}catch{/* Unknown installation evidence stays unknown. */}
+          await inspectInstallation();
           let storagePath:string|null=null;
           try {const descriptors=(child.get('settings') as any)?.describe({redactSecrets:true})??[];const route=descriptors.find((d:any)=>d.ns==='storage-domain')?.value;const root=descriptors.find((d:any)=>d.ns==='storage-json')?.value?.root;
             if((route?.routes?.[lab.domainName]??route?.backend)==='json'&&typeof root==='string')storagePath=join(root,lab.domainName+'.json');}catch{/* No guessed paths. */}
@@ -47,7 +52,7 @@ export function mountLab(ctx:Context,config:object,recordFor:(id:string)=>any){
         }else if(op==='export'){
           if(Object.keys(args).length!==1||!['json','csv'].includes(args.format))throw Error('invalid-request');value=await lab.export(args.format);
         }else if(op==='checkUpdates'){
-          if(Object.keys(args).length)throw Error('invalid-request');value=await updates.check(installation);
+          if(Object.keys(args).length)throw Error('invalid-request');const evidence=await inspectInstallation();value={...await updates.check(evidence),installation:evidence};
         }else throw Error('unknown-operation');
         return {ok:true,value};
       }catch{return{ok:false,error:{code:'lab/rejected',message:'操作未完成：请刷新后重试，检查存储状态或记录修订。',details:{}}};}

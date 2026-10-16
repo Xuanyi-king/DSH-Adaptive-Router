@@ -9,6 +9,7 @@ type Route = {
     efforts: Record<string, number>;
 };
 export type LabRow = {
+    requestAttribution?: 'message-source' | 'legacy-header';
     schemaVersion: 1;
     recordId: string;
     timestamp: number;
@@ -37,6 +38,13 @@ export interface LabStorage {
 }
 export declare function localOperator(connection: any, server: any, peer: unknown): boolean;
 export declare function summarize(rows: LabRow[]): {
+    requestAttribution: {
+        confirmed: number;
+        unknown: number;
+        total: number;
+        legacyTurns: number;
+        countMissingTurns: number;
+    };
     turns: number;
     classified: number;
     controls: Record<string, number>;
@@ -95,6 +103,13 @@ export declare class RouterLab {
         pending: number;
         dropped: number;
         summary: {
+            requestAttribution: {
+                confirmed: number;
+                unknown: number;
+                total: number;
+                legacyTurns: number;
+                countMissingTurns: number;
+            };
             turns: number;
             classified: number;
             controls: Record<string, number>;
@@ -128,6 +143,13 @@ export declare class RouterLab {
         pending: number;
         dropped: number;
         summary: {
+            requestAttribution: {
+                confirmed: number;
+                unknown: number;
+                total: number;
+                legacyTurns: number;
+                countMissingTurns: number;
+            };
             turns: number;
             classified: number;
             controls: Record<string, number>;
@@ -161,6 +183,13 @@ export declare class RouterLab {
         pending: number;
         dropped: number;
         summary: {
+            requestAttribution: {
+                confirmed: number;
+                unknown: number;
+                total: number;
+                legacyTurns: number;
+                countMissingTurns: number;
+            };
             turns: number;
             classified: number;
             controls: Record<string, number>;
@@ -194,8 +223,62 @@ export declare class RouterLab {
             observational: boolean;
             causalEvidence: boolean;
         };
-        records: LabRow[];
+        records: {
+            requestAttribution: "message-source" | "legacy-header";
+            schemaVersion: 1;
+            recordId: string;
+            timestamp: number;
+            revision: number;
+            routerBuildVersion: string;
+            routerBuildCommit: string | null;
+            fallbackApplied: boolean;
+            routes: Route[];
+            routesTruncated: boolean;
+            classifierModel: string | null;
+            tier: string | null;
+            role: string | null;
+            relation: string | null;
+            experimentConfigRevision: string | null;
+            routingMode: string | null;
+            classifierEngine: string | null;
+            sessionScope: string | null;
+            source: string | null;
+            confidenceKind: string | null;
+            plannedProvider: string | null;
+            plannedModel: string | null;
+            plannedEffort: string | null;
+            actualProvider: string | null;
+            actualModel: string | null;
+            actualEffort: string | null;
+            control: string | null;
+            reasonCode: string | null;
+            turnFinishReason: string | null;
+            usageSource: string | null;
+            durationSource: string | null;
+            qualitySource: string | null;
+            rating: string | null;
+            confidence: number | null;
+            turnNumber: number | null;
+            classifierElapsedMs: number | null;
+            elapsedMs: number | null;
+            modelRequestCount: number | null;
+            toolStepCount: number | null;
+            retryCount: number | null;
+            inputTokens: number | null;
+            outputTokens: number | null;
+            cacheReadTokens: number | null;
+            cacheWriteTokens: number | null;
+            reasoningTokens: number | null;
+            feedbackTimestamp: number | null;
+        }[];
         dataQualitySummary: {
+            requestAttribution: {
+                confirmed: number;
+                unknown: number;
+                total: number;
+                legacyTurns: number;
+                countMissingTurns: number;
+            };
             turns: number;
             classified: number;
             controls: Record<string, number>;

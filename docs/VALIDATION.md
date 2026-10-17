@@ -224,3 +224,15 @@ React DOM 覆盖原生采集草稿保存、权限/空状态、反馈绑定和 re
 本轮不声称新增Windows Desktop或完整DSH Web验证；使用真实AgentLoop、原生Session/Storage及jsdom。旧版Web截图属于此前S4.2A验收。兼容性与模型归属边界见S4.2A说明的P1节。
 
 收尾重新执行 `npm ci`、`npm test`（156/156）、`npm run build`、`npm pack`、`node --check lib/client.js`、`git diff --check`，全部通过。Runtime/peer 依赖和锁文件未修改；tarball 35项，lib 与工作区字节一致，不含测试、截图、实验数据或凭据。
+
+## P1 原生自动压缩与容量保护
+
+基线 main `91926d56434dc386b8ac987faf72b2b0d81fa85c`：npm ci/test/build，156/156。目标源码为 DSH 0.2.1-alpha.2（`d743267`），实际核对 pre-step → request → Provider error → 原生压缩重试顺序。
+
+新增17项回归：原生 Token Meter 文本估算、旧长会话原生压力压缩、已提交缓存模型的主动原生恢复、真实 Provider 超限事件及一次重试、重复超限的原生预算、失败压缩不重复执行、缓存不永久锁存、投影替换后重新解析容量、未知容量与估算失败分别处理、压缩中取消不发迟到请求。Lab 测试覆盖事件匹配、恢复/失败/未知、后一次失败不继承早先恢复、旧数据缺失字段、CSV 和 UI 元数据。原有156项全部保留。
+
+最终 npm ci、npm test **173/173，0失败、0跳过**、npm run build、npm pack、node --check lib/client.js、git diff --check 通过。使用真实 AgentLoop / 原生 Token Meter / BasicCompactionEngine 的选择与投影替换，摘要生成采用离线确定性替身；没有调用在线付费模型。Runtime/peer 依赖不变，新增固定目标版本的 token-meter 与 compaction-basic 两个开发测试依赖，锁文件原有包版本保持不变。
+
+Windows Desktop 和完整 Web 原生压缩流程未实机验证，不将此前 UI 浏览器截图作为本次压缩验收证据。Windows 操作步骤、自动压缩关闭/无法压缩单个大单元等保守限制、可选实验字段及回滚注意事项见 [NATIVE-COMPACTION-FIX.md](NATIVE-COMPACTION-FIX.md)。
+
+生产包另在隔离目录执行 `npm install --omit=dev <tgz>` 并导入正式入口通过，未安装 token-meter / compaction-basic 开发包。tarball 36项、约109 KiB，逐字节核对 lib 一致；含新增说明、不含测试/截图/实验数据/本地日志。可选原生服务不存在不影响插件加载。

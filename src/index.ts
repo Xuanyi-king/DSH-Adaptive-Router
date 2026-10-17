@@ -1,5 +1,8 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent, PreStepDecision } from "@deepseek-ai/dsh-agent";
+import { createSystemMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
+import type {} from "@deepseek-ai/dsh-compaction";
+import type { TokenMeter } from "@deepseek-ai/dsh-token-meter";
 import type { LlmCallConfig, LlmResolvedModelInfo, UserMessage } from "@deepseek-ai/dsh-llm";
 import type {} from "@deepseek-ai/dsh-session-projection";
 import { renderPrompt, renderContextSnapshot, type PromptAssembly } from "@deepseek-ai/dsh-system-prompt";
@@ -53,7 +56,9 @@ interface RecordState {
   configKey?: string;
   registryRevision?: number;
   modelInfo?: LlmResolvedModelInfo;
-  capacityBlocked?: string;
+  capacitySurface?: number;
+  capacityControl?: string;
+  capacityReason?: string;
   mode?: ConfigValues['mode'];
   source?: string;
   tier?: string;
@@ -66,7 +71,7 @@ interface RecordState {
   fallbackApplied?: boolean;
   committed?: boolean;
 }
-class ContextCapacityError extends Error {}
+class ContextCapacityError extends Error { override name = "ContextCapacityError"; }
 const isSubagent = (agent: Agent) => agent.session.header.origin === "subagent";
 const selectionOf = (config: LlmCallConfig): Selection => ({
   provider: config.provider,
@@ -116,11 +121,21 @@ async function withinBudget<T>(
 }
 export function apply(ctx: Context, config: object) {
   let disposed = false;
+  let nativeRecovery: {auto:()=>boolean;run:(agent:Agent,signal:AbortSignal)=>Promise<unknown>}|undefined;
+  // Optional public service seam. Calling the native backend must retain its
+  // declared Cordis dependencies, not borrow the router's narrower injection.
+  ctx.inject(["compaction","tokenMeter","sessions","llm"],child=>{
+    const native=child.get("compaction") as unknown as {config?:{auto?:boolean};compactIfNeeded(agent:Agent,trigger:"context-overflow",signal:AbortSignal):Promise<unknown>};
+    const bridge={auto:()=>native.config?.auto===true,run:(agent:Agent,signal:AbortSignal)=>native.compactIfNeeded(agent,"context-overflow",signal)};
+    nativeRecovery=bridge;
+    child.effect(()=>()=>{if(nativeRecovery===bridge)nativeRecovery=undefined;});
+  });
   const held = new WeakMap<Agent, RecordState>();
+  const steps = new WeakMap<Agent["session"], {turn:number;step:number;compactionAttempted:boolean;recoveryAttempted:boolean}>();
   const pending = new WeakMap<
     Agent,
     { turn: number; text: string; material: boolean; images: boolean;
-      messages?: UserMessage[];
+      step?: number; admitted?: boolean; nativePromptTokens?: number; messages?: UserMessage[];
       assembly?: PromptAssembly; promptBytes?: number; batchRevision?: number; assemblyRevision?: number }
   >();
   const records = new Map<string, RecordState>();
@@ -172,8 +187,12 @@ export function apply(ctx: Context, config: object) {
           Buffer.byteLength(renderPrompt(resolved), "utf8"),
           Buffer.byteLength(renderPrompt({ ...resolved, sections: assembly.sections }), "utf8"),
         );
+        let nativePromptTokens: number | undefined;
+        try { const meter=ctx.get("tokenMeter") as TokenMeter|undefined;
+          if(meter)nativePromptTokens=Math.max(meter.estimateMessage(createSystemMessage(renderPrompt(resolved))),meter.estimateMessage(createSystemMessage(renderPrompt({...resolved,sections:assembly.sections}))));
+        } catch { /* Native estimation failure is distinct from a full window. */ }
         pending.set(agent, { turn: -1, text: "", material: false, images: false,
-          ...previous, assembly: resolved, promptBytes, assemblyRevision: boundaryRevision });
+          ...previous, assembly: resolved, promptBytes, nativePromptTokens, assemblyRevision: boundaryRevision });
       } catch {
         // An unpriceable assembly must not break an otherwise valid DSH request.
         pending.set(agent, { turn: -1, text: "", material: false, images: false,
@@ -253,7 +272,14 @@ export function apply(ctx: Context, config: object) {
     else entries.push(publicRecord(record));
     history.set(id, entries.slice(-20));
   }
+  ctx.on("agent/request-error", async ({agent},next)=>{
+    const input=pending.get(agent);if(input)input.admitted=true;
+    return next();
+  }, {prepend:true});
   ctx.on("session/event", (session, event) => {
+    if(event.type==="compaction/start"){const step=steps.get(session);if(step&&event.data.turn===step.turn)step.compactionAttempted=true;}
+    if(event.type==="compaction/prune"){const step=steps.get(session);if(step)step.compactionAttempted=true;}
+    if(event.type==="turn/end")steps.delete(session);
     if (event.type !== "request/header" || session.header.origin === "subagent") return;
     const id = String(session.id), record = records.get(id);
     if (!record) return;
@@ -293,6 +319,7 @@ export function apply(ctx: Context, config: object) {
   async function captureStep(payload: { agent: Agent; turn: number; step: number;
     messages: UserMessage[]; signal: AbortSignal }, next: () => Promise<PreStepDecision>) {
     const boundaryRevision = captureRevision;
+    if(!isSubagent(payload.agent))steps.set(payload.agent.session,{turn:payload.turn,step:payload.step,compactionAttempted:false,recoveryAttempted:false});
     const decision = await next();
     if (decision.kind !== "reject" && !isSubagent(payload.agent)) {
       const messages = decision.messages.filter(
@@ -300,6 +327,7 @@ export function apply(ctx: Context, config: object) {
       );
       pending.set(payload.agent, {
         ...pending.get(payload.agent),
+        step:payload.step, admitted:false,
         messages: decision.messages,
         batchRevision: boundaryRevision,
         turn: payload.turn,
@@ -332,30 +360,69 @@ export function apply(ctx: Context, config: object) {
     if (input?.assemblyRevision !== assemblyRevision || !input?.assembly || !input.messages || input.promptBytes === undefined
       || input.batchRevision !== prependRevision) return undefined;
     const history = agent.session.deriveMessages();
+    const offered = input.admitted ? [] : input.messages;
     // Attachments and deferred tools need adapter-owned pricing: do not guess.
-    if ([...history, ...input.messages].some(message => message.content.some(
+    if ([...history, ...offered].some(message => message.content.some(
       block => !["text", "reasoning", "tool-call"].includes(block.type),
     )) || input.assembly.tools.some(tool => tool.deferLoading)) return undefined;
     try {
       const refreshed = ctx.systemPrompt.refreshContext(input.assembly, { agent, scope: agent, signal });
       // UTF-8 bytes deliberately overcount typical text tokens. Include all offered
       // inputs, history, system/runtime text and tool schemas; no chars/4 shortcut.
-      return Buffer.byteLength(JSON.stringify([...history, ...input.messages]), "utf8")
+      return Buffer.byteLength(JSON.stringify([...history, ...offered]), "utf8")
         + input.promptBytes + Buffer.byteLength(renderContextSnapshot(refreshed), "utf8")
         + Buffer.byteLength(JSON.stringify(input.assembly.tools), "utf8");
     } catch { return undefined; }
   }
+  type Capacity = "fits" | "over-limit" | "estimate-unavailable" | "metadata-unavailable";
+  function capacity(agent:Agent,original:LlmCallConfig,info:LlmResolvedModelInfo|undefined,signal:AbortSignal):Capacity {
+    const window=info?.context?.contextWindow;
+    if(!window||!Number.isFinite(window)||window<=0)return "metadata-unavailable";
+    const bytes=contextBytes(agent,signal);
+    if(bytes===undefined)return "estimate-unavailable";
+    const meter=ctx.get("tokenMeter") as TokenMeter|undefined;
+    if(meter){
+      try {
+        const input=pending.get(agent)!;
+        if(input.nativePromptTokens===undefined||!Number.isFinite(input.nativePromptTokens))return "estimate-unavailable";
+        const measured=meter.measure(agent.session,{config:{...original,provider:info!.provider,model:info!.id},tools:input.assembly!.tools});
+        const refreshed=ctx.systemPrompt.refreshContext(input.assembly!,{agent,scope:agent,signal});
+        const context=renderContextSnapshot(refreshed);
+        const offered=input.admitted?[]:input.messages!.filter(message=>String(message.source.kind)!=="runtime-context");
+        const additions=[input.nativePromptTokens,...offered.map(message=>meter.estimateMessage(message)),meter.estimateMessage(createUserMessage({source:{kind:"user"},content:[{type:"text",text:context}]}))];
+        if(!Number.isFinite(measured.totalTokens)||measured.totalTokens<0||additions.some(n=>!Number.isFinite(n)||n<0))return "estimate-unavailable";
+        // Match native completion reservation: no declared cap is not half a window.
+        // The native meter is an estimate, not a tokenizer or provider admission proof.
+        const output=original.maxTokens??info!.defaultMaxTokens??0;
+        return measured.totalTokens+additions.reduce((sum,n)=>sum+n,0)+output+2048<=window?"fits":"over-limit";
+      }catch{return "estimate-unavailable";}
+    }
+    // Optional native service absent: retain the existing conservative byte bound.
+    const output=original.maxTokens??info!.defaultMaxTokens??Math.floor(window/2);
+    return bytes+output+2048<=window?"fits":"over-limit";
+  }
   function fitsContext(agent: Agent, original: LlmCallConfig, info: LlmResolvedModelInfo,
     currentInfo: LlmResolvedModelInfo | undefined, signal: AbortSignal, reuse = false): boolean {
     if (!reuse && sameModel(original, { provider: info.provider, model: info.id })) return true;
-    const window = info.context?.contextWindow;
-    if (!window) return false;
-    const bytes = contextBytes(agent, signal);
-    if (bytes === undefined) return !reuse && !!currentInfo?.context && window >= currentInfo.context.contextWindow;
-    const output = original.maxTokens ?? info.defaultMaxTokens ?? Math.floor(window / 2);
-    // Leave framing slack plus the configured/native output cap, or half the
-    // window when the provider has not declared its output default.
-    return bytes + output + 2048 <= window;
+    const result=capacity(agent,original,info,signal);
+    if(result==="fits")return true;
+    return result==="estimate-unavailable"&&!reuse&&!!currentInfo?.context&&!!info.context&&info.context.contextWindow>=currentInfo.context.contextWindow;
+  }
+  async function recoverCapacity(agent:Agent,original:LlmCallConfig,selected:Selection,info:LlmResolvedModelInfo|undefined,signal:AbortSignal,s:ConfigValues){
+    let fit=capacity(agent,original,info,signal);
+    const frame=steps.get(agent.session);
+    const native=nativeRecovery;
+    const actual=agent.session.requestHeader()?.config;
+    // Public native force policy, not a synthetic Provider failure or Session Header.
+    // Never compact toward an uncommitted new route or retry a pressure attempt.
+    if(fit!=="over-limit"||!frame||frame.compactionAttempted||frame.recoveryAttempted||!native?.auto()
+      ||!ctx.get("tokenMeter")||!actual||!sameModel(actual,selected))return{fit,info};
+    frame.recoveryAttempted=true;
+    try {if(s.labEnabled)(ctx.get("adaptiveRouterLab") as {lab:{capacityRecovery(id:string,turn:number):void}}|undefined)?.lab.capacityRecovery(String(agent.session.id),frame.turn);}catch{/* Telemetry cannot change recovery. */}
+    try {await native.run(agent,signal);}catch{/* Partial native progress is still remeasured; cancellation is checked by the caller. */}
+    try {info=await withinBudget(ctx.llm.resolveModelInfo(selected.provider,selected.model,signal),s.timeoutMs,signal);}catch{info=undefined;}
+    fit=capacity(agent,original,info,signal);
+    return{fit,info};
   }
   async function validateHeld(selected: Selection, signal: AbortSignal) {
     if (!ctx.llm.listProviders().some(provider => provider.id === selected.provider)) return undefined;
@@ -462,24 +529,29 @@ export function apply(ctx: Context, config: object) {
         if (prior?.turn === turn && prior.configKey !== routingKey(s))
           return pass("settings-changed", "Native");
         if (prior?.turn === turn && prior.selection) {
-          // An explicit capacity stop must remain a stop on a retry: original
-          // may already be the small model recorded in DSH's persisted header.
-          if (prior.capacityBlocked) throw new ContextCapacityError(prior.capacityBlocked);
+          // Never permanently latch a capacity error: native compaction may have
+          // durably replaced the surface between attempts in this same step.
           let info = prior.modelInfo;
           if (prior.registryRevision !== inspectedRevision) {
             info = await withinBudget(validateHeld(prior.selection, signal), s.timeoutMs, signal);
             if (!info) return pass("held-route-unavailable");
           }
+          if(prior.registryRevision===inspectedRevision&&prior.capacitySurface!==agent.session.surface.replaceGeneration){
+            try {info=await withinBudget(ctx.llm.resolveModelInfo(prior.selection.provider,prior.selection.model,signal),s.timeoutMs,signal);}catch{info=undefined;}
+          }
           if (!canApply(agent, s, signal, inspectedRevision)) return pass("decision-superseded", "Native");
-          const fits = info && fitsContext(agent, original, info, undefined, signal, true);
+          const recovered=await recoverCapacity(agent,original,prior.selection,info,signal,s);
+          const fit=recovered.fit;info=recovered.info;
           if (!canApply(agent, s, signal, inspectedRevision)) return pass("decision-superseded", "Native");
-          if (!fits) {
-            const message = `Adaptive Router stopped this turn: the latest context exceeds or cannot safely be priced within the cached ${prior.selection.provider}/${prior.selection.model} window (${info?.context?.contextWindow ?? "unknown"}). Select a larger-context model or compact the conversation before continuing.`;
-            save(agent, { ...prior, reason: "context-capacity-blocked", control: "Blocked", capacityBlocked: message });
+          if (fit!=="fits") {
+            const reason=fit==="metadata-unavailable"?"context-capacity-unknown":fit==="estimate-unavailable"?"context-estimate-unavailable":"context-capacity-blocked";
+            const detail=fit==="metadata-unavailable"?"model context capacity is unavailable":fit==="estimate-unavailable"?"context estimation is unavailable":"estimated input plus reserved output exceeds the model capacity";
+            const message = `Adaptive Router stopped this turn: ${detail} for cached ${prior.selection.provider}/${prior.selection.model} (${info?.context?.contextWindow ?? "unknown"}). Native compaction could not make this request safely admissible; select a larger-context model or use native /compact before continuing.`;
+            save(agent, { ...prior, reason, control: "Blocked", capacityControl:prior.capacityControl??prior.control, capacityReason:prior.capacityReason??prior.reason });
             throw new ContextCapacityError(message);
           }
           if (!canApply(agent, s, signal, inspectedRevision)) return pass("decision-superseded", "Native");
-          save(agent, { ...prior, modelInfo: info, registryRevision: inspectedRevision });
+          save(agent, { ...prior, modelInfo: info, registryRevision: inspectedRevision, capacitySurface:agent.session.surface.replaceGeneration, control:prior.capacityControl??prior.control, reason:prior.capacityReason??prior.reason, capacityControl:undefined, capacityReason:undefined });
           return replace(original, prior.selection);
         }
         const text = pending.get(agent);
@@ -564,6 +636,7 @@ export function apply(ctx: Context, config: object) {
                   configKey: routingKey(s),
                   registryRevision: inspectedRevision,
                   modelInfo: fallback.modelInfo,
+                  capacitySurface:agent.session.surface.replaceGeneration,
                 });
                 return replace(original, selected);
               }
@@ -601,7 +674,10 @@ export function apply(ctx: Context, config: object) {
             ))
         )
           return pass("validation-failed");
-        if (!fitsContext(agent, original, info, currentInfo, signal)) return pass("context-too-large");
+        if (!fitsContext(agent, original, info, currentInfo, signal)) {
+          const kind=capacity(agent,original,info,signal);
+          return pass(kind==="metadata-unavailable"?"context-capacity-unknown":kind==="estimate-unavailable"?"context-estimate-unavailable":"context-too-large");
+        }
         if (!canApply(agent, s, signal, inspectedRevision))
           return pass("decision-superseded", "Native");
         const control = result.reason === "no-compatible-model" ? "Bypass" : result.reason === "manual" ? "Manual" : "Auto";
@@ -618,11 +694,12 @@ export function apply(ctx: Context, config: object) {
           configKey: routingKey(s),
           registryRevision: inspectedRevision,
           modelInfo: info,
+          capacitySurface:agent.session.surface.replaceGeneration,
         });
         return replace(original, selected);
       } catch (error) {
-        // Known unsafe cached input is an intentional, visible stop, not a
-        // router malfunction that should silently pass the persisted route.
+        // A capacity stop, including unavailable evidence, cannot silently pass
+        // the small model already recorded in the native Header.
         if (error instanceof ContextCapacityError) throw error;
         return pass("router-error");
       }

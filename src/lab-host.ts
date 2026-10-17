@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm';
 import { RouterLab, localOperator, type LabStorage } from './lab.js';
 import { UpdateChecker, identifySource, type Installation } from './updates.js';
 import { readConfig } from './config.js';
@@ -17,6 +18,7 @@ export function mountLab(ctx:Context,config:object,recordFor:(id:string)=>any){
     if(!readConfig(config).labEnabled)return;
     try {const record=recordFor(String(session.id));if(record)lab.decision(String(session.id),record);lab.observe(session,event);}catch{/* Lab must never fail a native Session append. */}
   });
+  ctx.on('agent/request-error',async({agent,turn,failure},next)=>{if(readConfig(config).labEnabled&&failure.code===CONTEXT_WINDOW_EXCEEDED_CODE)lab.overflow(String(agent.session.id),turn);return next();},{prepend:true});
   ctx.on('agent/disposed',({agent})=>lab.forget(String(agent.session.id)));
   ctx.on('session/disposed',session=>lab.forget(String(session.id)));
   const on=ctx.on.bind(ctx) as (name:string,cb:()=>void)=>unknown;

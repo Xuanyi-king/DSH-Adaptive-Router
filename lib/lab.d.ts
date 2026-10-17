@@ -2,6 +2,14 @@ import { z } from 'zod';
 import type { ConfigValues } from './config.js';
 declare const textFields: readonly ["experimentConfigRevision", "routingMode", "classifierEngine", "classifierModel", "sessionScope", "source", "tier", "role", "relation", "confidenceKind", "plannedProvider", "plannedModel", "plannedEffort", "actualProvider", "actualModel", "actualEffort", "control", "reasonCode", "turnFinishReason", "usageSource", "durationSource", "qualitySource", "rating"];
 declare const numberFields: readonly ["turnNumber", "confidence", "classifierElapsedMs", "elapsedMs", "modelRequestCount", "toolStepCount", "retryCount", "inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens", "feedbackTimestamp"];
+type Compaction = {
+    attempts: number;
+    completed: number;
+    failed: number;
+    providerOverflows: number;
+    trigger: 'provider-overflow' | 'router-capacity-check' | 'mixed' | 'unknown';
+    recovered: boolean | null;
+};
 type Route = {
     provider: string;
     model: string;
@@ -9,6 +17,7 @@ type Route = {
     efforts: Record<string, number>;
 };
 export type LabRow = {
+    compaction?: Compaction;
     requestAttribution?: 'message-source' | 'legacy-header';
     schemaVersion: 1;
     recordId: string;
@@ -38,6 +47,14 @@ export interface LabStorage {
 }
 export declare function localOperator(connection: any, server: any, peer: unknown): boolean;
 export declare function summarize(rows: LabRow[]): {
+    compactions: {
+        observedTurns: number;
+        unknownTurns: number;
+        attempts: number;
+        completed: number;
+        failed: number;
+        recoveredTurns: number;
+    };
     requestAttribution: {
         confirmed: number;
         unknown: number;
@@ -90,6 +107,8 @@ export declare class RouterLab {
     open(storage: LabStorage): Promise<void>;
     sync(): void;
     decision(sessionId: string, decision: any): void;
+    overflow(sessionId: string, turn: number): void;
+    capacityRecovery(sessionId: string, turn: number): void;
     observe(session: any, event: any): void;
     forget(sessionId: string): void;
     private prune;
@@ -103,6 +122,14 @@ export declare class RouterLab {
         pending: number;
         dropped: number;
         summary: {
+            compactions: {
+                observedTurns: number;
+                unknownTurns: number;
+                attempts: number;
+                completed: number;
+                failed: number;
+                recoveredTurns: number;
+            };
             requestAttribution: {
                 confirmed: number;
                 unknown: number;
@@ -143,6 +170,14 @@ export declare class RouterLab {
         pending: number;
         dropped: number;
         summary: {
+            compactions: {
+                observedTurns: number;
+                unknownTurns: number;
+                attempts: number;
+                completed: number;
+                failed: number;
+                recoveredTurns: number;
+            };
             requestAttribution: {
                 confirmed: number;
                 unknown: number;
@@ -183,6 +218,14 @@ export declare class RouterLab {
         pending: number;
         dropped: number;
         summary: {
+            compactions: {
+                observedTurns: number;
+                unknownTurns: number;
+                attempts: number;
+                completed: number;
+                failed: number;
+                recoveredTurns: number;
+            };
             requestAttribution: {
                 confirmed: number;
                 unknown: number;
@@ -225,6 +268,7 @@ export declare class RouterLab {
         };
         records: {
             requestAttribution: "message-source" | "legacy-header";
+            compaction?: Compaction;
             schemaVersion: 1;
             recordId: string;
             timestamp: number;
@@ -272,6 +316,14 @@ export declare class RouterLab {
             feedbackTimestamp: number | null;
         }[];
         dataQualitySummary: {
+            compactions: {
+                observedTurns: number;
+                unknownTurns: number;
+                attempts: number;
+                completed: number;
+                failed: number;
+                recoveredTurns: number;
+            };
             requestAttribution: {
                 confirmed: number;
                 unknown: number;

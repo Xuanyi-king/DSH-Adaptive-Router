@@ -941,3 +941,83 @@ test('native Session contract: failed settlement has no route, message source be
  s.append('step/end',{turn:2,step:1});s.append('turn/end',{turn:2,reason:{kind:'completed'}});await lab.flush();let view=lab.view();assert.equal(view.summary.turns,1);assert.equal(view.recent[0].actualModel,'coder');assert.equal(view.recent[0].inputTokens,10);assert.deepEqual(view.recent[0].routes.map(r=>[r.model,r.count]),[['unknown',1],['fast',1]]);assert.equal(view.recent[0].modelRequestCount,2);
  s.append('turn/start',{turn:3});s.append('step/start',{turn:3,step:1});s.append('assistant/attempt',{turn:3,step:1,stream:[]});s.append('assistant/message',{turn:3,step:1,message:createAssistantMessage({source:{provider:'p',model:'balanced'},content:[]}),usage:{inputTokens:8,outputTokens:2,totalTokens:10},stream:[]},{surfaceOp:'append'});s.append('step/end',{turn:3,step:1});s.append('turn/end',{turn:3,reason:{kind:'error',error:{code:'UNKNOWN',message:'fixture'}}});await lab.flush();view=lab.view();assert.equal(view.recent[0].inputTokens,null);assert.equal(view.summary.tokenCoverage,1);assert.equal(view.summary.turns,2);assert.equal(view.summary.requestAttribution.total,4);assert.equal(view.summary.requestAttribution.confirmed,2);assert.equal(view.summary.requestAttribution.unknown,2);assert.equal(view.summary.models.reduce((n,m)=>n+m.requests,0),4);
 });
+
+// Real target-version compactor + meter. Only the documented summary backend is
+// replaced with deterministic text; hook order, policy, replay and commits are native.
+async function nativeCompaction(f, options={}) {
+  const {default:TokenMeter}=await import('@deepseek-ai/dsh-token-meter');
+  const {BasicCompactionEngine}=await import('@deepseek-ai/dsh-compaction-basic');
+  await f.ctx.plugin(TokenMeter);
+  class FixtureCompactor extends BasicCompactionEngine {
+    calls=[]; summaries=0; fail=false;
+    async compactIfNeeded(agent,trigger,signal){this.calls.push(trigger);return super.compactIfNeeded(agent,trigger,signal);}
+    async summarize(){this.summaries++;if(this.fail)throw Error('synthetic summary failed');return{summary:[{type:'text',text:'checkpoint'}],provider:'offline-summary',model:'fixture'};}
+  }
+  await f.ctx.plugin(FixtureCompactor,{headroomTokens:1024,maxTokens:512,retainTokens:0,compactionRetries:0,...options});
+  const compact=f.ctx.get("compaction");
+  const resolve=f.adapter.resolveModel.bind(f.adapter);
+  f.adapter.resolveModel=async(provider,model)=>({...await resolve(provider,model),defaultMaxTokens:1024,context:{contextWindow:model==='balanced'?200000:64000}});
+  return compact;
+}
+function toolReply(adapter){return async function*(options){this.requests.push(options);if(options.model==='fast'&&!this.usedTool){this.usedTool=true;yield{type:'block-start',index:0,blockType:'tool-call'};yield{type:'block-end',index:0,block:{type:'tool-call',id:ToolCallId('native-growth'),name:'native-growth',arguments:'{}'}};yield{type:'finish',reason:{kind:'tool-calls'}};}else yield{type:'finish',reason:{kind:'stop'}};};}
+function nativeGrowth(f,text){f.ctx.tools.register({name:'native-growth',description:'Offline context growth',parameters:{type:'object',properties:{}},output:{schema:{type:'string'},render:(_args,value)=>[{type:'text',text:value}]},async execute(){return typeof text==='function'?text():text;}});f.adapter.stream=toolReply(f.adapter);}
+
+test('native meter does not mislabel byte growth below model capacity as overflow',async t=>{
+  const f=await setup(t);await nativeCompaction(f);nativeGrowth(f,'x'.repeat(140000));await send(f.agent,'你好');
+  assert.equal(f.adapter.requests.length,2);assert.equal(f.adapter.requests[1].model,'fast');assert.equal(f.agent.session.snapshotEvents().findLast(e=>e.type==='turn/end').data.reason.kind,'completed');
+});
+test('native pressure compacts old history and cached route remeasures retained context',async t=>{
+  const f=await setup(t,{labEnabled:true});const compact=await nativeCompaction(f);nativeGrowth(f,'x'.repeat(40000));
+  await send(f.agent,'old history '+ 'x'.repeat(220000));await send(f.agent,'你好');
+  assert.equal(compact.summaries,1);assert.equal(f.adapter.requests.length,3);assert.equal(f.adapter.requests[1].model,'fast');assert.equal(f.adapter.requests[2].model,'fast');
+  assert.equal(f.agent.session.snapshotEvents().findLast(e=>e.type==='turn/end').data.reason.kind,'completed');assert.equal(compact.calls.filter(c=>c==='context-overflow').length,0);
+});
+test('provider-confirmed overflow reaches native recovery and retries once without rereading admitted inputs',async t=>{
+  const f=await setup(t,{labEnabled:true});const compact=await nativeCompaction(f);
+  await send(f.agent,'old history '+ 'x'.repeat(40000));
+  f.ctx.on('agent/pre-step',async(payload,next)=>{const decision=await next();return payload.turn===2?{...decision,messages:[...decision.messages,createUserMessage({content:[{type:'text',text:'x'.repeat(140000)}],source:{kind:'model-selection',form:'notice',summary:'offered context'}})]}:decision;});
+  let failed=false;f.adapter.stream=async function*(request){this.requests.push(request);if(!failed){failed=true;yield{type:'finish',reason:{kind:'error',failure:{message:'Synthetic provider context overflow',code:'CONTEXT_WINDOW_EXCEEDED'}}};}else yield{type:'finish',reason:{kind:'stop'}};};
+  await send(f.agent,'你好');
+  assert.equal(f.adapter.requests[1].model,'fast');assert.equal(f.adapter.requests.length,3);assert.equal(compact.calls.filter(c=>c==='context-overflow').length,1);assert.equal(compact.summaries,1);assert.equal(f.agent.session.snapshotEvents().findLast(e=>e.type==='turn/end').data.reason.kind,'completed');
+});
+
+test('failed native pressure summary still blocks truly excessive cached context without a provider retry',async t=>{
+  const f=await setup(t,{labEnabled:true});const compact=await nativeCompaction(f);nativeGrowth(f,'x'.repeat(40000));await send(f.agent,'old history '+ 'x'.repeat(220000));compact.fail=true;await send(f.agent,'你好');
+  assert.equal(compact.calls.filter(c=>c==='context-overflow').length,0,'do not repeat a failed pressure compaction in the same step');assert.equal(compact.summaries,1);assert.equal(f.adapter.requests.length,2);assert.equal(f.ctx.get('adaptiveRouter').getSessionState(String(f.agent.session.id)).decision.reason,'context-capacity-blocked');assert.equal(f.agent.session.snapshotEvents().findLast(e=>e.type==='compaction/end').data.error.includes('synthetic summary failed'),true);
+  await f.ctx.get('adaptiveRouterLab').lab.flush();assert.equal(f.ctx.get('adaptiveRouterLab').lab.view().recent[0].compaction.failed,1);
+});
+test('missing native model capacity is not reported as a measured context overflow',async t=>{
+  const f=await setup(t);await nativeCompaction(f);nativeGrowth(f,()=>{const resolve=f.adapter.resolveModel.bind(f.adapter);f.adapter.resolveModel=async(provider,model)=>({...await resolve(provider,model),context:undefined});f.ctx.emit('llm/adapters-updated');return 'small';});await send(f.agent,'你好');assert.equal(f.adapter.requests.length,1);assert.equal(f.ctx.get('adaptiveRouter').getSessionState(String(f.agent.session.id)).decision.reason,'context-capacity-unknown');
+});
+test('native token estimation failure stays distinct and cannot silently dispatch an unpriced cached route',async t=>{
+  const f=await setup(t);await nativeCompaction(f);nativeGrowth(f,()=>{f.ctx.tokenMeter.measure=()=>{throw Error('private estimation failure');};return 'small';});await send(f.agent,'你好');assert.equal(f.adapter.requests.length,1);assert.equal(f.ctx.get('adaptiveRouter').getSessionState(String(f.agent.session.id)).decision.reason,'context-estimate-unavailable');
+});
+test('native overflow recovery failure preserves original provider failure and does not loop',async t=>{
+  const f=await setup(t,{labEnabled:true});const compact=await nativeCompaction(f);await send(f.agent,'old history '+ 'x'.repeat(40000));compact.fail=true;
+  f.adapter.stream=async function*(request){this.requests.push(request);yield{type:'finish',reason:{kind:'error',failure:{message:'Synthetic confirmed overflow',code:'CONTEXT_WINDOW_EXCEEDED'}}};};await send(f.agent,'你好');assert.equal(f.adapter.requests.length,2);assert.equal(compact.calls.filter(c=>c==='context-overflow').length,1);assert.equal(compact.summaries,1);const end=f.agent.session.snapshotEvents().findLast(e=>e.type==='turn/end');assert.match(JSON.stringify(end.data.reason),/CONTEXT_WINDOW_EXCEEDED/);
+});
+test('capacity rejection can recover after an actual public native compaction instead of latching forever',async t=>{
+  const f=await setup(t);const compact=await nativeCompaction(f,{auto:false});nativeGrowth(f,'x'.repeat(300000));await send(f.agent,'你好');assert.equal(f.adapter.requests.length,1);assert.equal(f.ctx.get('adaptiveRouter').getSessionState(String(f.agent.session.id)).decision.control,'Blocked');
+  f.agent.session.append('user/message',createUserMessage({source:{kind:'user'},content:[{type:'text',text:'small tail'}]}),{surfaceOp:'append'});const before=f.agent.session.surface.replaceGeneration;await compact.compactNow(f.agent,new AbortController().signal);assert.ok(f.agent.session.surface.replaceGeneration>before);
+  const result=await agentEvents(f.ctx,f.agent).waterfall('agent/request',{turn:1,step:2,signal:new AbortController().signal},()=>Promise.resolve(f.agent.session.requestHeader().config));assert.equal(result.model,'fast');assert.equal(f.ctx.get('adaptiveRouter').getSessionState(String(f.agent.session.id)).decision.control,'Auto');
+});
+
+test('local cached capacity guard gives native forced recovery one opportunity before blocking',async t=>{
+  const f=await setup(t,{labEnabled:true});const compact=await nativeCompaction(f,{thresholdRatio:1,headroomTokens:0});nativeGrowth(f,'x'.repeat(44000));await send(f.agent,'old history '+ 'x'.repeat(200000));await send(f.agent,'你好');
+  assert.equal(compact.summaries,1);assert.equal(compact.calls.filter(c=>c==='context-overflow').length,1);assert.equal(f.adapter.requests.length,3);assert.equal(f.agent.session.snapshotEvents().filter(e=>e.type==='assistant/attempt').length,0,'local recovery must not fabricate a provider error or request');assert.equal(f.agent.session.snapshotEvents().findLast(e=>e.type==='turn/end').data.reason.kind,'completed');
+  await f.ctx.get('adaptiveRouterLab').lab.flush();const row=f.ctx.get('adaptiveRouterLab').lab.view().recent[0];assert.equal(row.compaction.trigger,'router-capacity-check');assert.equal(row.compaction.providerOverflows,0);assert.equal(row.compaction.recovered,true);
+});
+
+test('post-compaction capacity is resolved again without rebuilding the model catalog',async t=>{
+  const f=await setup(t);const compact=await nativeCompaction(f);nativeGrowth(f,'x'.repeat(40000));await send(f.agent,'old history '+ 'x'.repeat(220000));
+  let catalogs=0;const list=f.adapter.listModels.bind(f.adapter);f.adapter.listModels=async p=>{catalogs++;return list(p);};let shrink=false;const resolve=f.adapter.resolveModel.bind(f.adapter);f.adapter.resolveModel=async(p,m)=>({...await resolve(p,m),...(shrink&&m==='fast'?{context:{contextWindow:8000}}:{})});f.ctx.on('session/event',(_session,event)=>{if(event.type==='compaction/end')shrink=true;});await send(f.agent,'你好');
+  assert.equal(compact.summaries,1);assert.equal(f.adapter.requests.length,2,'smaller post-compaction capacity must stop the next model request');assert.equal(catalogs,1);assert.equal(f.ctx.get('adaptiveRouter').getSessionState(String(f.agent.session.id)).decision.reason,'context-capacity-blocked');
+});
+test('native provider-overflow retry budget remains bounded even when a retry also overflows',async t=>{
+  const f=await setup(t,{labEnabled:true});const compact=await nativeCompaction(f);await send(f.agent,'old history '+ 'x'.repeat(40000));f.adapter.stream=async function*(request){this.requests.push(request);yield{type:'finish',reason:{kind:'error',failure:{message:'still overflowing',code:'CONTEXT_WINDOW_EXCEEDED'}}};};await send(f.agent,'你好');
+  assert.equal(f.adapter.requests.length,3);assert.equal(compact.summaries,1);assert.equal(compact.calls.filter(c=>c==='context-overflow').length,1);await f.ctx.get('adaptiveRouterLab').lab.flush();const row=f.ctx.get('adaptiveRouterLab').lab.view().recent[0];assert.equal(row.compaction.providerOverflows,2);assert.equal(row.compaction.recovered,false);assert.equal(row.modelRequestCount,2);
+});
+
+test('user cancellation during native guard recovery never dispatches a late model request',async t=>{
+  const f=await setup(t,{labEnabled:true});const compact=await nativeCompaction(f,{thresholdRatio:1,headroomTokens:0});nativeGrowth(f,'x'.repeat(44000));await send(f.agent,'old history '+ 'x'.repeat(200000));compact.summarize=async(_input,_agent,signal)=>{f.agent.cancel({kind:'user'});signal.throwIfAborted();};await send(f.agent,'你好');assert.equal(f.adapter.requests.length,2);assert.equal(compact.calls.filter(c=>c==='context-overflow').length,1);const end=f.agent.session.snapshotEvents().findLast(e=>e.type==='turn/end');assert.ok(['aborted','interrupted'].includes(end.data.reason.kind));await f.ctx.get('adaptiveRouterLab').lab.flush();assert.equal(f.ctx.get('adaptiveRouterLab').lab.view().recent[0].compaction.recovered,null);
+});

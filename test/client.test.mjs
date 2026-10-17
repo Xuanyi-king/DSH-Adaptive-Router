@@ -302,3 +302,11 @@ test('connection reset drops a late static-check notice from the previous Host',
 for(const status of [401,403])test('native RPC admission HTTP '+status+' explains permission without claiming disconnection',async t=>{
   const ui=mount(t,null,async()=>{throw Error('transport failure for /api/adaptiveRouterLab/read: HTTP '+status);});await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');assert.match(document.querySelector('[role=alert]').textContent,/当前账户无权执行此操作/);assert.doesNotMatch(document.querySelector('[role=alert]').textContent,/连接已断开/);
 });
+test('Lab exposes observed native recovery without calling a local guard a Provider overflow',async t=>{const row={recordId:'a'.repeat(36),timestamp:Date.now(),turnNumber:2,revision:1,actualModel:'fast',turnFinishReason:'completed',compaction:{attempts:1,completed:1,failed:0,providerOverflows:0,trigger:'router-capacity-check',recovered:true}};const ui=mount(t,null,async()=>({ok:true,value:{available:true,recent:[row],pending:0,dropped:0}}));await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');assert.match(document.body.textContent,/原生压缩 1 次.*路由容量保护.*已观察到/);assert.doesNotMatch(document.body.textContent,/Provider 确认超限/);});
+
+for(const [recovered,label] of [[false,'未恢复'],[null,'未知']])test('refined Lab keeps native compaction recovery '+String(recovered)+' distinct',async t=>{
+  const row={recordId:'b'.repeat(36),timestamp:Date.now(),turnNumber:3,revision:1,actualProvider:'p',actualModel:'fast',turnFinishReason:'error',compaction:{attempts:1,completed:0,failed:1,providerOverflows:1,trigger:'provider-overflow',recovered}};
+  const ui=mount(t,null,async()=>({ok:true,value:{available:true,recent:[row],pending:0,dropped:0}}));await ui.render('plugins.bundle.config');
+  const lab=document.querySelector('[aria-label="路由实验室"]');assert.ok(lab);assert.match(lab.textContent,new RegExp('原生压缩 1 次.*完成 0 / 失败 1.*Provider 确认超限.*压缩后请求恢复 '+label));assert.doesNotMatch(lab.textContent,/压缩后请求恢复 已观察到/);
+  assert.equal([...lab.querySelectorAll('details')].find(e=>e.querySelector('summary')?.textContent.startsWith('最近记录')).open,false);
+});

@@ -6,19 +6,21 @@ import { engineFor } from './diagnostics.js';
 const textFields = ['experimentConfigRevision','routingMode','classifierEngine','classifierModel','sessionScope','source','tier','role','relation','confidenceKind','plannedProvider','plannedModel','plannedEffort','actualProvider','actualModel','actualEffort','control','reasonCode','turnFinishReason','usageSource','durationSource','qualitySource','rating'] as const;
 const numberFields = ['turnNumber','confidence','classifierElapsedMs','elapsedMs','modelRequestCount','toolStepCount','retryCount','inputTokens','outputTokens','cacheReadTokens','cacheWriteTokens','reasoningTokens','feedbackTimestamp'] as const;
 const tokenFields = ['inputTokens','outputTokens','cacheReadTokens','cacheWriteTokens','reasoningTokens'] as const;
+type Compaction = {attempts:number;completed:number;failed:number;providerOverflows:number;trigger:'provider-overflow'|'router-capacity-check'|'mixed'|'unknown';recovered:boolean|null};
+const newCompaction=():Compaction=>({attempts:0,completed:0,failed:0,providerOverflows:0,trigger:'unknown',recovered:null});
 type Route = { provider: string; model: string; count: number; efforts: Record<string, number> };
-export type LabRow = { requestAttribution?: 'message-source' | 'legacy-header'; schemaVersion: 1; recordId: string; timestamp: number; revision: number; routerBuildVersion: string; routerBuildCommit: string | null; fallbackApplied: boolean; routes: Route[]; routesTruncated: boolean }
+export type LabRow = { compaction?:Compaction; requestAttribution?: 'message-source' | 'legacy-header'; schemaVersion: 1; recordId: string; timestamp: number; revision: number; routerBuildVersion: string; routerBuildCommit: string | null; fallbackApplied: boolean; routes: Route[]; routesTruncated: boolean }
   & Record<typeof textFields[number], string | null> & Record<typeof numberFields[number], number | null>;
 const textShape = Object.fromEntries(textFields.map(k=>[k,z.string().max(160).nullable()])) as Record<typeof textFields[number], z.ZodNullable<z.ZodString>>;
 const numberShape = Object.fromEntries(numberFields.map(k=>[k,z.number().finite().nonnegative().nullable()])) as Record<typeof numberFields[number], z.ZodNullable<z.ZodNumber>>;
-const rowSchema = z.object({ requestAttribution:z.enum(['message-source','legacy-header']).optional(),schemaVersion:z.literal(1),recordId:z.string().uuid(),timestamp:z.number().nonnegative(),revision:z.number().int().positive(),routerBuildVersion:z.string().max(80),routerBuildCommit:z.string().max(40).nullable(),fallbackApplied:z.boolean(),routesTruncated:z.boolean(),
+const rowSchema = z.object({ compaction:z.object({attempts:z.number().int().nonnegative(),completed:z.number().int().nonnegative(),failed:z.number().int().nonnegative(),providerOverflows:z.number().int().nonnegative(),trigger:z.enum(['provider-overflow','router-capacity-check','mixed','unknown']),recovered:z.boolean().nullable()}).strict().optional(), requestAttribution:z.enum(['message-source','legacy-header']).optional(),schemaVersion:z.literal(1),recordId:z.string().uuid(),timestamp:z.number().nonnegative(),revision:z.number().int().positive(),routerBuildVersion:z.string().max(80),routerBuildCommit:z.string().max(40).nullable(),fallbackApplied:z.boolean(),routesTruncated:z.boolean(),
   routes:z.array(z.object({provider:z.string().max(160),model:z.string().max(160),count:z.number().int().nonnegative(),efforts:z.record(z.string().max(80),z.number().int().nonnegative())}).strict()).max(16),
   ...textShape,...numberShape }).strict().refine(r=>Buffer.byteLength(JSON.stringify(r))<=4096) as z.ZodType<LabRow>;
 const snapshotSchema=z.object({schemaVersion:z.literal(1),salt:z.string().uuid(),records:z.array(rowSchema).max(5000)}).strict();
 type Snapshot=z.infer<typeof snapshotSchema>;
 export interface LabDomain { global: {get():Snapshot;set(value:Snapshot):Promise<void>};close():Promise<void> }
 export interface LabStorage {open(spec:object):Promise<LabDomain>}
-const accepted=new Set(['turn/start','turn/end','step/start','request/header','tool/call','assistant/message','assistant/attempt','llm/retry-started']);
+const accepted=new Set(['turn/start','turn/end','step/start','request/header','tool/call','assistant/message','assistant/attempt','llm/retry-started','compaction/start','compaction/end']);
 const str=(v:unknown)=>typeof v==='string' && v.length<=160 ? v : null;
 const count=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0 ? v : null;
 const blank=()=>({schemaVersion:1 as const,salt:randomUUID(),records:[]});
@@ -30,11 +32,13 @@ export function summarize(rows:LabRow[]) {
   const totals=Object.fromEntries(tokenFields.map(k=>[k,{value:0,coverage:0}]));
   const controls:Record<string,number>={},outcomes:Record<string,number>={},feedback:Record<string,number>={},models=new Map<string,any>();
   let classified=0,elapsed=0,latencyCount=0;
+  const compactions={observedTurns:0,unknownTurns:0,attempts:0,completed:0,failed:0,recoveredTurns:0};
   const requestAttribution={confirmed:0,unknown:0,total:0,legacyTurns:0,countMissingTurns:0};
   const addRoute=(route:Route,tier:string|null)=>{const key=JSON.stringify([route.provider,route.model]);const m=models.get(key)??{provider:route.provider,model:route.model,requests:0,efforts:Object.create(null),tiers:Object.create(null)};m.requests+=route.count;
     for(const [effort,n]of Object.entries(route.efforts))m.efforts[effort]=(m.efforts[effort]??0)+n;
     m.tiers[tier??'unknown']=(m.tiers[tier??'unknown']??0)+route.count;models.set(key,m);};
-  for(const r of rows){controls[r.control??'unknown']=(controls[r.control??'unknown']??0)+1;outcomes[r.turnFinishReason??'unknown']=(outcomes[r.turnFinishReason??'unknown']??0)+1;
+  for(const r of rows){if(r.compaction){compactions.observedTurns++;compactions.attempts+=r.compaction.attempts;compactions.completed+=r.compaction.completed;compactions.failed+=r.compaction.failed;if(r.compaction.recovered===true)compactions.recoveredTurns++;}else compactions.unknownTurns++;
+    controls[r.control??'unknown']=(controls[r.control??'unknown']??0)+1;outcomes[r.turnFinishReason??'unknown']=(outcomes[r.turnFinishReason??'unknown']??0)+1;
     if(r.rating)feedback[r.rating]=(feedback[r.rating]??0)+1;
     if(r.tier)classified++;
     if(r.tier&&['Jev','NeoHorse'].includes(r.source??'')&&r.classifierElapsedMs!==null){elapsed+=r.classifierElapsedMs;latencyCount++;}
@@ -48,15 +52,15 @@ export function summarize(rows:LabRow[]) {
   }
   for(const k of tokenFields)if(!totals[k].coverage)(totals[k] as {value:number|null}).value=null;
   requestAttribution.unknown=requestAttribution.total-requestAttribution.confirmed;
-  return {requestAttribution,turns:rows.length,classified,controls,outcomes,feedback,feedbackCount:Object.values(feedback).reduce((a,b)=>a+b,0),fallbackApplied:rows.filter(r=>r.fallbackApplied).length,
+  return {compactions,requestAttribution,turns:rows.length,classified,controls,outcomes,feedback,feedbackCount:Object.values(feedback).reduce((a,b)=>a+b,0),fallbackApplied:rows.filter(r=>r.fallbackApplied).length,
     tokenCoverage:rows.filter(r=>r.inputTokens!==null&&r.outputTokens!==null).length,tokens:totals,classifierLatency:{meanMs:latencyCount?elapsed/latencyCount:null,coverage:latencyCount},
     models:[...models.values()].slice(0,50),modelsTruncated:models.size>50,distributionTruncated:rows.filter(r=>r.routesTruncated).length,configRevisions:new Set(rows.map(r=>r.experimentConfigRevision)).size};
 }
-const csvColumns=['schemaVersion','recordId','timestamp','routerBuildVersion','routerBuildCommit',...textFields,...numberFields,'fallbackApplied','requestAttribution'] as const;
-export function exportCsv(rows:LabRow[]) {const cell=(v:unknown)=>{let s=v==null?'':String(v);if(/^[\s]*[=+\-@\t\r\n]/u.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};return '\uFEFF'+csvColumns.join(',')+'\r\n'+rows.map(r=>csvColumns.map(k=>cell(k==='requestAttribution'?(r.requestAttribution??'legacy-header'):r[k])).join(',')).join('\r\n');}
+const csvColumns=['schemaVersion','recordId','timestamp','routerBuildVersion','routerBuildCommit',...textFields,...numberFields,'fallbackApplied','requestAttribution','compaction'] as const;
+export function exportCsv(rows:LabRow[]) {const cell=(v:unknown)=>{let s=v==null?'':String(v);if(/^[\s]*[=+\-@\t\r\n]/u.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};return '\uFEFF'+csvColumns.join(',')+'\r\n'+rows.map(r=>csvColumns.map(k=>cell(k==='compaction'?(r.compaction?JSON.stringify(r.compaction):null):k==='requestAttribution'?(r.requestAttribution??'legacy-header'):r[k])).join(',')).join('\r\n');}
 export class RouterLab {
   private domain?:LabDomain;private rows:LabRow[]=[];private salt:string=randomUUID();private pending=new Map<string,LabRow>();
-  private active=new Map<string,{row:LabRow;lastSeq:number;lastTool:number;lastStep:number}>();
+  private active=new Map<string,{row:LabRow;lastSeq:number;lastTool:number;lastStep:number;compactionId?:string;compactionFinished?:boolean;compactionSucceeded?:boolean}>();
   private timer?:ReturnType<typeof setTimeout>;private chain:Promise<unknown>=Promise.resolve();private epoch=0;private closed=false;private clearing=false;
   error:string|null=null;dropped=0;readonly domainName:string;
   constructor(private config:()=>ConfigValues,scope:string,private version:string,private clock=()=>Date.now()) {this.domainName='adaptive_router_lab_'+createHash('sha256').update(scope).digest('hex').slice(0,16);}
@@ -75,6 +79,8 @@ export class RouterLab {
     if(decision.selection){r.plannedProvider=str(decision.selection.provider);r.plannedModel=str(decision.selection.model);r.plannedEffort=str(decision.selection.reasoningEffort);}
     r.fallbackApplied=r.fallbackApplied||decision.fallbackApplied===true;
   }
+  overflow(sessionId:string,turn:number){const active=this.active.get(String(sessionId));if(!active||active.row.turnNumber!==turn)return;const c=active.row.compaction??=newCompaction();c.providerOverflows++;c.trigger=c.trigger==='router-capacity-check'?'mixed':'provider-overflow';}
+  capacityRecovery(sessionId:string,turn:number){const active=this.active.get(String(sessionId));if(!active||active.row.turnNumber!==turn)return;const c=active.row.compaction??=newCompaction();c.trigger=c.trigger==='provider-overflow'?'mixed':'router-capacity-check';}
   observe(session:any,event:any) {if(!accepted.has(event.type)||this.closed)return;try{
     const c=this.config();if(!c.enabled||!c.labEnabled){this.active.clear();return;}if(!this.domain||this.clearing||session.header.origin==='subagent'){if(event.type==='turn/start'&&session.header.origin!=='subagent')this.dropped++;return;}
     const id=String(session.id),d=event.data;
@@ -91,6 +97,13 @@ export class RouterLab {
     const a=this.active.get(id);if(!a||event.seq<=a.lastSeq||(d.turn!==undefined&&d.turn!==a.row.turnNumber))return;a.lastSeq=event.seq;
     const r=a.row;const header=session.requestHeader()?.config;
     r.actualProvider=str(header?.provider);r.actualModel=str(header?.model);r.actualEffort=str(header?.reasoningEffort);
+    if(event.type==='compaction/start'){
+      const c=r.compaction??=newCompaction();c.attempts++;c.recovered=null;a.compactionId=d.compactionId;a.compactionFinished=false;a.compactionSucceeded=false;
+    }
+    if(event.type==='compaction/end'&&a.compactionId===d.compactionId){
+      const c=r.compaction!;if(d.error!==undefined)c.failed++;else c.completed++;a.compactionId=undefined;a.compactionFinished=true;a.compactionSucceeded=d.error===undefined;
+    }
+    if(event.type==='assistant/message'&&!d.interrupted&&a.compactionFinished&&a.compactionSucceeded&&r.compaction?.completed)r.compaction.recovered=true;
     if(event.type==='step/start')a.lastStep=d.step;
     if(event.type==='tool/call'&&a.lastTool!==d.step){a.lastTool=d.step;r.toolStepCount!++;}
     if(event.type==='llm/retry-started')r.retryCount=(r.retryCount??0)+1;
@@ -107,6 +120,7 @@ export class RouterLab {
       let route=r.routes.find(m=>m.provider===provider&&m.model===model);if(!route&&r.routes.length<16){route={provider,model,count:0,efforts:{}};r.routes.push(route);}if(route){route.count++;const known=Object.hasOwn(route.efforts,effort);if(effort.length>80||(!known&&Object.keys(route.efforts).length>=16))r.routesTruncated=true;else Object.defineProperty(route.efforts,effort,{value:(known?route.efforts[effort]:0)+1,enumerable:true,configurable:true,writable:true});}else r.routesTruncated=true;
     }
     if(event.type==='turn/end'){
+      if(r.compaction&&r.compaction.recovered===null&&(r.control==='Blocked'||d.reason?.kind==='error'&&(r.compaction.failed>0||r.compaction.providerOverflows>0)))r.compaction.recovered=false;
       this.active.delete(id);r.turnFinishReason=['completed','error','aborted','interrupted','blocked','max-tokens','forked'].includes(d.reason?.kind)?d.reason.kind:'unknown';
       r.elapsedMs=event.time>=r.timestamp?event.time-r.timestamp:null;r.durationSource=r.elapsedMs===null?'unavailable':'observed';
       if(r.plannedProvider&&(r.plannedProvider!==r.actualProvider||r.plannedModel!==r.actualModel||(r.plannedEffort??null)!==r.actualEffort)&&!['Blocked','Conflict','Manual'].includes(r.control??'')){r.control='Native';r.reasonCode='native-override';}

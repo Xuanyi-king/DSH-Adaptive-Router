@@ -31,12 +31,16 @@ export function mountLab(ctx:Context,config:object,recordFor:(id:string)=>any){
       installation=next;return next;
     };
     const handle=async(endpoint:string,payload:any,_signal:AbortSignal,peer:unknown)=>{
-      const denied=()=>({ok:false,error:{code:'lab/forbidden',message:'Router Lab 仅供原生认证的本地 operator Profile；远程或未知边界不开放数据访问。',details:{}}});
-      if(closed||!localOperator(connection,child.get('webServer'),peer))return denied();
+      const denied=(reason:'environment'|'permission')=>({ok:false,error:{code:'lab/forbidden',message:reason==='environment'?'当前环境无法查看实验数据':'当前账户无权执行此操作',details:{reason}}});
+      if(closed)return{ok:false,error:{code:'lab/disconnected',message:'连接已断开，请重试',details:{}}};
+      if(!localOperator(connection,child.get('webServer'),peer)){
+        const server=child.get('webServer') as {host?:string}|undefined;
+        return denied(connection.allowsRemoteAuthorities!==false||!['127.0.0.1','::1','localhost','[::1]'].includes(server?.host??'')?'environment':'permission');
+      }
       try{
         const op=endpoint,args=payload?.args??{};
         if(!args||typeof args!=='object'||Array.isArray(args))throw Error('invalid-request');
-        if(['feedback','clear'].includes(op)&&(child.get('settings') as any)?.writable!==true)return denied();
+        if(['feedback','clear'].includes(op)&&(child.get('settings') as any)?.writable!==true)return denied('permission');
         await ready;
         let value:any;
         if(op==='read'){
@@ -57,7 +61,7 @@ export function mountLab(ctx:Context,config:object,recordFor:(id:string)=>any){
           if(Object.keys(args).length)throw Error('invalid-request');const evidence=await inspectInstallation();value={...await updates.check(evidence),installation:evidence};
         }else throw Error('unknown-operation');
         return {ok:true,value};
-      }catch{return{ok:false,error:{code:'lab/rejected',message:'操作未完成：请刷新后重试，检查存储状态或记录修订。',details:{}}};}
+      }catch(error){const reason=error instanceof Error?error.message:'';const known:Record<string,string>={'record-conflict':'记录已更新，请刷新后重试','storage-unavailable':'数据存储暂不可用',unavailable:'数据存储暂不可用'};const code=Object.hasOwn(known,reason)?reason==='unavailable'?'storage-unavailable':reason:'rejected';return{ok:false,error:{code:'lab/'+code,message:code==='rejected'?'加载失败，请重试':known[reason],details:{}}};}
     };
     // The target's rpc.handle captures a shadow Context without webServer injection.
     // Exact Fetch routes share native /api admission without taking Gateway's interceptor.

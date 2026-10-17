@@ -225,6 +225,17 @@ React DOM 覆盖原生采集草稿保存、权限/空状态、反馈绑定和 re
 
 收尾重新执行 `npm ci`、`npm test`（156/156）、`npm run build`、`npm pack`、`node --check lib/client.js`、`git diff --check`，全部通过。Runtime/peer 依赖和锁文件未修改；tarball 35项，lib 与工作区字节一致，不含测试、截图、实验数据或凭据。
 
+## S4.3 原生 UI/UX 精修（2026-10-17）
+
+main `91926d5` 基线156/156；新增17项，最终173/173、0失败/跳过。保留原有路由/容量/手动优先、原生 AgentLoop、Storage、Schema 与更新检查回归；仅修改 UI 文案相关的测试定位和原生导出菜单操作。
+
+- 分组/折叠、预设即草稿、凭据名称状态、保存/撤销、静态检查与真实验证区分、reset 后旧检查响应失效、采集未保存不显示记录中、不可用存储不冒充零指标、错误分类及未知错误不泄漏、Host 拒绝边界通过。
+- 真实官方 DSH `0.2.1-alpha.2` + Chromium，隔离本机 Profile，离线原生 Adapter：预设与原生保存、刷新恢复、缺凭据检查、开启实验采集、完整 Turn/Usage/模型来源、反馈、JSON 导出、取消/确认清空、固定 GitHub 只读查询通过。另一个声明 remote authority 的真实 Host 被正确拒绝，显示环境限制且导出禁用，未放宽权限。
+- 1440/768/390px × 深浅主题 × 100/125/150% CSS page zoom 共18组，插件无横向溢出；超长名称/URL、键盘 Enter/焦点与减少动画通过。真实页面 pageerror 0；脚本调试时的欢迎弹层/严格角色定位失败已修正并重跑，不记为产品通过。
+- `npm ci`、`npm test`、`npm run build`、`npm pack`、`node --check lib/client.js`、`git diff --check`通过；构建产物一致，截图排除，依赖无变更。
+- Windows Desktop、macOS/iOS、系统缩放菜单、真实 Jev/NeoHorse 与付费 Provider 未测试。只读/存储故障/断连等其余异常覆盖来自 jsdom 和原生契约测试，未夸大为全部真实浏览器故障注入。
+
+细节与截图见 [S4.3-NATIVE-UX.md](S4.3-NATIVE-UX.md)。本轮未改路由、分类、统计 Schema、更新策略或 DSH Core。
 ## P1 原生自动压缩与容量保护
 
 基线 main `91926d56434dc386b8ac987faf72b2b0d81fa85c`：npm ci/test/build，156/156。目标源码为 DSH 0.2.1-alpha.2（`d743267`），实际核对 pre-step → request → Provider error → 原生压缩重试顺序。
@@ -236,3 +247,13 @@ React DOM 覆盖原生采集草稿保存、权限/空状态、反馈绑定和 re
 Windows Desktop 和完整 Web 原生压缩流程未实机验证，不将此前 UI 浏览器截图作为本次压缩验收证据。Windows 操作步骤、自动压缩关闭/无法压缩单个大单元等保守限制、可选实验字段及回滚注意事项见 [NATIVE-COMPACTION-FIX.md](NATIVE-COMPACTION-FIX.md)。
 
 生产包另在隔离目录执行 `npm install --omit=dev <tgz>` 并导入正式入口通过，未安装 token-meter / compaction-basic 开发包。tarball 36项、约109 KiB，逐字节核对 lib 一致；含新增说明、不含测试/截图/实验数据/本地日志。可选原生服务不存在不影响插件加载。
+
+## PR #8 同步原生压缩修复（2026-10-17）
+
+在原 `feature/s4.3-native-ux` 分支合入 main `eb4a376a0e402ab789f067af6102feb844a5c817`，保留上述 S4.3 和 P1 两份独立历史验收记录。冲突手工整合，生成的 lib 由合并后的源码重新构建。
+
+- `src/index.ts`、`src/lab.ts`、`src/diagnostics.ts` 及原生压缩 AgentLoop/Lab 回归与 main 保持一致，不更改原生恢复或容量边界。
+- Host 同时保留 #9 的真实 Provider 超限观察与 #8 的环境/权限/存储错误分类，原有权限条件不变。
+- 新界面的折叠记录详情保留原生压缩次数、失败、触发和恢复事实；原有 UI 和压缩测试并存，另加两项 UI 回归，确保失败与未知恢复不被显示为成功。
+- 完整执行 npm ci、npm test（**192/192，0失败、0跳过**）、npm run build、npm pack、node --check lib/client.js、git diff --check。没有新增依赖；相对最新 main 的依赖和锁文件完全相同。
+- 本次合并未重跑真实 Web/Windows Desktop，前述 S4.3 截图为原分支验收，不能当作本次合并后的实机证据。Windows 原生压缩复核仍按 [NATIVE-COMPACTION-FIX.md](NATIVE-COMPACTION-FIX.md) 执行。

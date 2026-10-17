@@ -180,7 +180,7 @@ test('native SettingsForm disposal clears retained drafts and captures a new bas
 test('manual settings explicitly need no Jev and effort-only settings do not require candidates',async t=>{
   const ui=mount(t);ui.config.set({...ui.config.getSnapshot(),value:{...ui.config.getSnapshot().value,mode:'MANUAL'}});
   await ui.render('plugins.bundle.config');
-  assert.match(document.body.textContent,/手动模式.*不需要分类服务/);
+  assert.match(document.body.textContent,/手动模式.*不调用分类服务/);
   await act(async()=>ui.config.set({...ui.config.getSnapshot(),value:{...ui.config.getSnapshot().value,mode:'EFFORT_AUTO'}}));
   assert.match(document.body.textContent,/尚未设置分类服务地址/);
   assert.doesNotMatch(document.querySelector('[aria-label="路由就绪状态"]').textContent,/候选/);
@@ -188,9 +188,9 @@ test('manual settings explicitly need no Jev and effort-only settings do not req
 test('NeoHorse preset stages an explicit config patch and keeps custom credentials until native save',async t=>{
   const ui=mount(t);ui.config.set({...ui.config.getSnapshot(),value:{...ui.config.getSnapshot().value,apiKeyEnv:'MY_CUSTOM_KEY',confidenceThreshold:.72}});
   await ui.render('plugins.bundle.config');
-  const preset=document.querySelector('select[aria-label="分类服务预设"]');assert.ok(preset);
+  const preset=document.querySelector('select[aria-label="服务类型"]');assert.ok(preset);
   await act(async()=>{preset.value='neohorse-hosted';preset.dispatchEvent(new Event('change',{bubbles:true}));});
-  await ui.click('应用预设到草稿');assert.equal(ui.writes.length,0);
+  assert.equal(ui.writes.length,0);
   await ui.click('保存');
   assert.equal(ui.config.getSnapshot().value.apiUrl,'https://tokenrhythm.studio/v1/systemone');
   assert.equal(ui.config.getSnapshot().value.apiKeyEnv,'MY_CUSTOM_KEY');
@@ -198,8 +198,8 @@ test('NeoHorse preset stages an explicit config patch and keeps custom credentia
 });
 test('connection check stays explicit about static-only validation and sends no chat or URL arguments',async t=>{
   const ui=mount(t);await ui.render('plugins.bundle.config');
-  await ui.click('测试连接（静态检查）');
-  assert.match(document.body.textContent,/未进行网络验证|未发起网络测试/);
+  await ui.click('检查配置');
+  assert.match(document.body.textContent,/不发送网络请求/);
   assert.ok(ui.setupCalls.length > 0);
   assert.ok(ui.setupCalls.every(call=>Object.keys(call.payload.args).length===0));
 });
@@ -208,17 +208,16 @@ test('staged endpoint does not inherit degraded health from the saved endpoint',
   const ui=mount(t,{keyAvailable:true,verified:false,verification:{ok:false,failure:'timeout'},networkTestAvailable:false});
   ui.config.set({...ui.config.getSnapshot(),value:{...ui.config.getSnapshot().value,apiUrl:'https://old.example/systemone',candidates:[{provider:'p',model:'fast',enabled:true,tier:'simple',roles:['general'],effortByTier:{}}]}});
   await ui.render('plugins.bundle.config');
-  assert.match(document.querySelector('[aria-label="路由就绪状态"]').textContent,/Degraded/);
-  const preset=document.querySelector('select[aria-label="分类服务预设"]');
+  assert.equal(document.querySelector('[aria-label="路由就绪状态"]').dataset.state,'Degraded');
+  const preset=document.querySelector('select[aria-label="服务类型"]');
   await act(async()=>{preset.value='neohorse-hosted';preset.dispatchEvent(new Event('change',{bubbles:true}));});
-  await ui.click('应用预设到草稿');
   assert.doesNotMatch(document.querySelector('[aria-label="路由就绪状态"]').textContent,/Degraded|超时/);
-  assert.match(document.querySelector('[aria-label="路由就绪状态"]').textContent,/Unverified/);
+  assert.equal(document.querySelector('[aria-label="路由就绪状态"]').dataset.state,'Unverified');
 });
 
 test('Router Lab opt-in is a native draft setting, not an immediate data write',async t=>{
   const ui=mount(t);await ui.render('plugins.bundle.config');
-  await ui.click('启用实验数据采集');assert.equal(ui.writes.length,0);
+  await ui.click('记录使用数据');assert.equal(ui.writes.length,0);
   await ui.click('保存');assert.equal(ui.config.getSnapshot().value.labEnabled,true);
 });
 test('Router Lab is explicit about unavailable access and maintenance remains a read-only link',async t=>{
@@ -230,16 +229,76 @@ test('Router Lab is explicit about unavailable access and maintenance remains a 
 
 test('Router Lab binds feedback revision, requires clear confirmation and never checks updates on read',async t=>{
   const calls=[];let value={available:true,domain:'own-domain',pending:0,dropped:0,summary:{turns:1,classified:0,controls:{Manual:1},outcomes:{completed:1},feedback:{},feedbackCount:0,fallbackApplied:0,classifierLatency:{meanMs:null,coverage:0},tokenCoverage:0,tokens:{inputTokens:{value:null,coverage:0}},models:[],configRevisions:1},recent:[{recordId:'a'.repeat(36),timestamp:Date.now(),turnNumber:3,revision:1,actualModel:'Real Fast',turnFinishReason:'completed',rating:null}],installation:{version:'0.1.0',sourceKind:'link',profile:'web'}};
-  const ui=mount(t,null,async(op,args)=>{calls.push({op,args});if(op==='feedback')value={...value,recent:[{...value.recent[0],rating:args.rating,revision:2}]};if(op==='clear')value={...value,recent:[],summary:{...value.summary,turns:0}};return {ok:true,value};});await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');assert.match(document.body.textContent,/Token 数据覆盖 0\/1/);assert.match(document.body.textContent,/completed 不是任务成功/);assert.ok(!calls.some(c=>c.op==='checkUpdates'));await ui.click('达到预期');assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),{op:'feedback',args:{id:'a'.repeat(36),rating:'met',revision:1}});await ui.click('需要返工');assert.equal(calls.at(-1).args.revision,2);await ui.click('清空实验数据');assert.notEqual(calls.at(-1).op,'clear');await ui.click('确认清空');assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),{op:'clear',args:{confirm:true}});assert.match(document.body.textContent,/暂无已持久化 Turn/);
+  const ui=mount(t,null,async(op,args)=>{calls.push({op,args});if(op==='feedback')value={...value,recent:[{...value.recent[0],rating:args.rating,revision:2}]};if(op==='clear')value={...value,recent:[],summary:{...value.summary,turns:0}};return {ok:true,value};});await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');assert.match(document.body.textContent,/Token 数据覆盖 0\/1/);assert.match(document.body.textContent,/completed 不是任务成功/);assert.ok(!calls.some(c=>c.op==='checkUpdates'));await ui.click('达到预期');assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),{op:'feedback',args:{id:'a'.repeat(36),rating:'met',revision:1}});await ui.click('需要返工');assert.equal(calls.at(-1).args.revision,2);await ui.click('清空实验数据');assert.notEqual(calls.at(-1).op,'clear');await ui.click('确认清空');assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),{op:'clear',args:{confirm:true}});assert.match(document.body.textContent,/还没有记录/);
 });
 
 test('Router Lab exports only explicit requests, keeps readonly actions disabled and drops stale reset results',async t=>{
   const calls=[],downloads=[];let delayed;const summary={turns:0,classified:0,controls:{},outcomes:{},feedback:{},feedbackCount:0,fallbackApplied:0,classifierLatency:{meanMs:null,coverage:0},tokenCoverage:0,tokens:{},models:[],configRevisions:0};const ui=mount(t,null,async(op,args)=>{calls.push({op,args});if(op==='export')return {ok:true,value:args.format==='json'?{schemaVersion:1,records:[]}:'recordId'};if(op==='checkUpdates')return new Promise(r=>delayed=r);return {ok:true,value:{available:true,pending:0,dropped:0,summary,recent:[]}};});
   window.URL.createObjectURL=blob=>{downloads.push(blob);return 'blob:fixture';};window.URL.revokeObjectURL=()=>{};window.HTMLAnchorElement.prototype.click=function(){};
-  await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');await ui.click('导出 JSON');await ui.click('导出 CSV');assert.equal(downloads.length,2);assert.deepEqual(calls.filter(c=>c.op==='export').map(c=>c.args.format),['json','csv']);
+  await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');await ui.click('导出数据');await ui.click('导出 JSON');await ui.click('导出数据');await ui.click('导出 CSV');assert.equal(downloads.length,2);assert.deepEqual(calls.filter(c=>c.op==='export').map(c=>c.args.format),['json','csv']);
   await act(async()=>ui.config.set({...ui.config.getSnapshot(),writable:false}));assert.equal([...document.querySelectorAll('button')].find(e=>e.textContent==='清空实验数据').disabled,true);
   await ui.click('检查更新');assert.ok(delayed);await ui.render('plugins.bundle.config',{useAdaptiveLabEpoch:selector=>React.useSyncExternalStore(()=>()=>{},()=>selector(2))});await act(async()=>delayed({ok:true,value:{checkedAt:Date.now(),releaseStatus:'newer-release'}}));assert.doesNotMatch(document.body.textContent,/发现较新 Release/);
 });
 
 test('maintenance distinguishes declared comparison and latest main from unknown actual install',async t=>{const sha='a'.repeat(40),head='b'.repeat(40);const ui=mount(t,null,async op=>({ok:true,value:op==='checkUpdates'?{checkedAt:Date.now(),mainCommit:head,mainStatus:'installed-commit-unknown',releaseStatus:'no-release',compatibility:'unknown',comparison:{basis:'declared',commit:sha,status:'ahead',changeKind:'documentation-only',filesComplete:true,error:null},installation:{version:'0.1.0',installedCommit:null,declaredCommit:sha,sourceKind:'fixed-sha',profile:'desktop'}}:{}}));await ui.render('plugins.bundle.config');await ui.click('检查更新');assert.match(document.body.textContent,/声明来源 SHA（未验证实际运行）/);assert.match(document.body.textContent,/main 有较新提交/);assert.match(document.body.textContent,/GitHub 最新 main/);assert.match(document.body.textContent,new RegExp(head));assert.match(document.body.textContent,/这不是实际运行版本的验证结果/);assert.doesNotMatch(document.body.textContent,/已是最新可确认 main/);});
 test('maintenance shows tgz package and main evidence without equating package versions to code',async t=>{const ui=mount(t,null,async()=>({ok:true,value:{checkedAt:Date.now(),mainCommit:'b'.repeat(40),mainStatus:'installed-commit-unknown',releaseStatus:'no-newer-release',compatibility:'unknown',comparison:{basis:null,status:'unknown'},installation:{version:'0.1.0',sourceKind:'tgz',profile:'desktop'}}}));await ui.render('plugins.bundle.config');await ui.click('检查更新');assert.match(document.body.textContent,/本地或远程 tgz/);assert.match(document.body.textContent,/package version 不能证明与 main 代码相同/);assert.match(document.body.textContent,/当前版本 0.1.0/);assert.doesNotMatch(document.body.textContent,/已是最新可确认 main/);});
+
+test('refined settings group controls and keep Lab detail out of the first view',async t=>{
+  const ui=mount(t);await ui.render('plugins.bundle.config');
+  assert.ok(document.querySelector('[aria-label="智能路由设置"]'));
+  assert.ok(document.querySelector('[aria-label="模型与分类服务"]'));
+  assert.equal(document.querySelector('details[aria-label="实验数据详情"]').open,false);
+  assert.equal(document.querySelector('details[aria-label="路由高级选项"]').open,false);
+  assert.ok(document.querySelector('select[aria-label="服务类型"]'));
+  assert.ok([...document.querySelectorAll('button')].some(e=>e.textContent==='检查配置'));
+  assert.match(document.body.textContent,/凭据名称，不是 API Key/);
+  assert.equal(document.querySelector('[aria-label="API Key 凭据"]').type,'text');
+});
+for(const [code,detail,text] of [['lab/forbidden','environment','当前环境无法查看实验数据'],['lab/forbidden','permission','当前账户无权执行此操作'],['lab/storage-unavailable',null,'数据存储暂不可用'],['lab/record-conflict',null,'记录已更新'],['lab/rejected',null,'加载失败，请重试']])test('Lab explains '+code+' '+detail+' without leaking raw server text',async t=>{
+  const ui=mount(t,null,async()=>({ok:false,error:{code,message:'secret/path/stack',details:{reason:detail}}}));await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');
+  assert.match(document.querySelector('[role=alert]').textContent,new RegExp(text));assert.doesNotMatch(document.body.textContent,/secret\/path/);
+});
+test('Lab network rejection has actionable connection copy',async t=>{
+  const ui=mount(t,null,async()=>{throw Error('private token');});await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');assert.match(document.querySelector('[role=alert]').textContent,/连接已断开，请重试/);assert.doesNotMatch(document.body.textContent,/private token/);
+});
+test('preset applies as one reversible draft without a second apply click',async t=>{
+  const ui=mount(t);await ui.render('plugins.bundle.config');const preset=document.querySelector('select[aria-label="服务类型"]');assert.ok(preset);
+  await act(async()=>{preset.value='neohorse-hosted';preset.dispatchEvent(new Event('change',{bubbles:true}));});
+  assert.equal(document.querySelector('[aria-label="接口地址"]').value,'https://tokenrhythm.studio/v1/systemone');assert.equal(ui.writes.length,0);
+  await ui.click('撤销未保存修改');assert.equal(document.querySelector('[aria-label="接口地址"]').value,'');
+});
+
+test('saved static check cannot claim service verification and actual verified evidence can',async t=>{
+  const facts={keyAvailable:true,endpointValid:true,verified:false,engine:'NeoHorse',model:'NeoHorse-Jev-4B'};
+  const ui=mount(t,facts);ui.config.set({...ui.config.getSnapshot(),value:{...ui.config.getSnapshot().value,apiUrl:'https://example.com/v1/systemone'}});await ui.render('plugins.bundle.config');
+  await ui.click('检查配置');assert.ok([...document.querySelectorAll('[role=status]')].some(e=>e.textContent==='配置正常，等待首次实际调用。'));
+  assert.ok(![...document.querySelectorAll('[role=status]')].some(e=>e.textContent==='服务已验证。'));
+  facts.verified=true;await ui.click('检查配置');assert.ok([...document.querySelectorAll('[role=status]')].some(e=>e.textContent==='服务已验证。'));
+});
+test('collection draft does not claim recording before native save',async t=>{
+  const ui=mount(t,null,async()=>({ok:true,value:{available:true}}));await ui.render('plugins.bundle.config');await ui.click('记录使用数据');
+  const lab=document.querySelector('[aria-label="路由实验室"]');assert.match(lab.querySelector('[role=status]').textContent,/待保存/);assert.doesNotMatch(lab.querySelector('[role=status]').textContent,/记录中/);
+  await ui.click('撤销未保存修改');assert.equal(lab.querySelector('[role=switch]').getAttribute('aria-checked'),'false');
+});
+
+test('unknown server error codes render generic copy and never raw diagnostics',async t=>{
+  const ui=mount(t,null,async()=>({ok:false,error:{code:'constructor',message:'/private/key',details:{reason:'token'}}}));await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');assert.match(document.querySelector('[role=alert]').textContent,/加载失败，请重试/);assert.doesNotMatch(document.body.textContent,/\/private\/key/);
+});
+test('unavailable storage does not render empty metrics as recorded evidence',async t=>{
+  const summary={turns:0,classified:0,controls:{},outcomes:{},feedback:{},feedbackCount:0,fallbackApplied:0,classifierLatency:{meanMs:null,coverage:0},tokenCoverage:0,tokens:{},models:[],configRevisions:0};
+  const ui=mount(t,null,async()=>({ok:true,value:{available:false,summary}}));await ui.render('plugins.bundle.config');assert.equal(document.querySelectorAll('.ar-metric').length,0);assert.match(document.body.textContent,/数据存储暂不可用/);
+});
+
+test('service selector reflects an existing saved preset and custom credentials stay references',async t=>{
+  const ui=mount(t,{keyAvailable:true,verified:false});ui.config.set({...ui.config.getSnapshot(),value:{...ui.config.getSnapshot().value,apiUrl:'https://tokenrhythm.studio/v1/systemone',classifierModel:'NeoHorse-Jev-4B',apiKeyEnv:'MY_CUSTOM_REF'}});await ui.render('plugins.bundle.config');assert.equal(document.querySelector('[aria-label="服务类型"]').value,'neohorse-hosted');assert.equal(document.querySelector('[aria-label="API Key 凭据"]').value,'MY_CUSTOM_REF');assert.ok([...document.querySelectorAll('.ar-status')].some(e=>e.textContent==='已配置'));assert.equal(ui.writes.length,0);
+});
+
+test('connection reset drops a late static-check notice from the previous Host',async t=>{
+  let finish;const ui=mount(t);await ui.render('plugins.bundle.config',{refreshSetup:()=>new Promise(r=>finish=r)});await ui.click('检查配置');assert.ok(finish);
+  await ui.render('plugins.bundle.config',{useAdaptiveLabEpoch:selector=>React.useSyncExternalStore(()=>()=>{},()=>selector(2))});
+  await act(async()=>finish({endpointValid:true,keyAvailable:true,verified:true}));assert.ok(![...document.querySelectorAll('[role=status]')].some(e=>e.textContent==='服务已验证。'));
+});
+
+for(const status of [401,403])test('native RPC admission HTTP '+status+' explains permission without claiming disconnection',async t=>{
+  const ui=mount(t,null,async()=>{throw Error('transport failure for /api/adaptiveRouterLab/read: HTTP '+status);});await ui.render('plugins.bundle.config');await ui.click('刷新实验数据');assert.match(document.querySelector('[role=alert]').textContent,/当前账户无权执行此操作/);assert.doesNotMatch(document.querySelector('[role=alert]').textContent,/连接已断开/);
+});
